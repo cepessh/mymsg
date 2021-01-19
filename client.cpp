@@ -26,15 +26,19 @@ struct Session {
       m_sign_choice_buf.reset(new asio::streambuf);
       m_login_request_buf.reset(new asio::streambuf);
       m_login_validity_buf.reset(new asio::streambuf);
+      m_password_request_buf.reset(new asio::streambuf);
+      m_password_validity_response.reset(new asio::streambuf);
+      m_buf.reset(new asio::streambuf);
     }  
 
   asio::ip::tcp::socket m_sock;
   asio::ip::tcp::endpoint m_ep;
   std::string m_request;
+  std::string sign_choice;
 
   std::shared_ptr<asio::streambuf> m_login_request_buf, 
-    m_login_validity_buf, m_sign_choice_buf;
-  asio::streambuf m_password_request_buf;
+    m_login_validity_buf, m_sign_choice_buf, m_buf, m_password_request_buf,
+    m_password_validity_response;
 
   std::string m_response;
   system::error_code m_ec;
@@ -59,7 +63,7 @@ public:
 
   void initLogger() {
     try {
-      logger = spdlog::basic_logger_mt("basig_logger", "logs/client_log.txt");
+      logger = spdlog::basic_logger_mt("basig_logger", "../logs/client_log.txt");
     }
     catch (const spdlog::spdlog_ex& ex) {
       logger = spdlog::default_logger();
@@ -108,10 +112,9 @@ public:
     session->m_sign_choice_buf.reset(new asio::streambuf);
     std::cout << sign_choice_request; 
 
-    std::string sign_choice;
-    std::cin >> sign_choice;
+    std::cin >> session->sign_choice;
 
-    asio::async_write(session->m_sock, asio::buffer(sign_choice + "\n"), 
+    asio::async_write(session->m_sock, asio::buffer(session->sign_choice + "\n"), 
       [this, session] (const system::error_code& ec, std::size_t) {
         onSignUpResponseSent(ec, session);
       }); 
@@ -215,12 +218,12 @@ public:
       return;
     }
 
-    std::istream istrm(&session->m_password_request_buf);
+    std::istream istrm(session->m_password_request_buf.get());
     std::string response;
-
     std::getline(istrm, response);
     std::cout << response;
-
+    session->m_password_request_buf.reset(new asio::streambuf);
+    
     std::string password;
     std::cin >> password;
 
@@ -233,10 +236,50 @@ public:
   void onPasswordSent(const system::error_code& ec, std::shared_ptr<Session> session) {
     if (ec.value() != 0) {
       session->m_ec = ec;
-    } else {
-    } 
-    onRequestComplete(session);
+      onRequestComplete(session);
+      return;
+    }
+    asio::async_read_until(session->m_sock, *(session->m_password_validity_response.get()), '\n', 
+      [this, session] (const system::error_code& ec, std::size_t) {
+        onPasswordValidityResponseReceived(ec, session);
+      });
+  } 
 
+  void onPasswordValidityResponseReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
+    if (ec.value() != 0) {
+      std::cout << ec.message() << std::endl;
+      session->m_ec = ec;
+      onRequestComplete(session);
+      return;
+    }
+    logger->info("in onPasswordValidityResponseReceived");
+    
+    std::istream istrm(session->m_password_validity_response.get());
+    std::string password_validity_response;
+    std::getline(istrm, password_validity_response);
+    std::cout << password_validity_response;
+    session->m_password_validity_response.reset(new asio::streambuf);
+    
+    if (password_validity_response == "Welcome! ") {
+      std::cout << std::endl;
+      onRequestComplete(session);
+    } else { 
+      if (password_validity_response == "Wrong login or password. Enter login: ") {
+        std::string login;
+        std::cin >> login;
+        asio::async_write(session->m_sock, asio::buffer(login + "\n"),
+          [this, session] (const system::error_code& ec, std::size_t) {
+            onLoginResponseSent(ec, session);
+          });
+      } else {
+        std::string password;
+        std::cin >> password;
+        asio::async_write(session->m_sock, asio::buffer(password + "\n"),
+          [this, session] (const system::error_code& ec, std::size_t) {
+            onPasswordSent(ec, session);
+          });
+      }
+    } 
   } 
 
   void cancelRequest(unsigned int request_id) {
@@ -301,7 +344,7 @@ void handler(unsigned int request_id, const std::string& response, const system:
 
 
 int main() {
-  std::ifstream cfg_istrm("/home/yen/Projects/mymsg/cfg_client.json");
+  std::ifstream cfg_istrm("../cfg_client.json");
   json cfg = json::parse(cfg_istrm);
 
   std::string raw_ip = cfg["server_ip"];

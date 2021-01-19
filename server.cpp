@@ -141,6 +141,10 @@ private:
       });
   }
 
+  bool password_is_valid(std::string password) {
+    return true;
+  } 
+
   void onPasswordReceived(const system::error_code& ec, std::size_t bytes_transferred) {
     if (ec.value() != 0) {
       spdlog::error("Error in onPasswordReceived, code: {}, message: ", ec.value(), ec.message());
@@ -149,24 +153,80 @@ private:
     } 
 
     std::istream istrm(m_password_buf.get());
-    std::getline(istrm, password);
+    std::string cur_password;
+    std::getline(istrm, cur_password);
     m_password_buf.reset(new asio::streambuf);
 
-    spdlog::info("Password received: {}", password);
-    
-    SACommand select_log_pw(m_con.get(), "select login, password from User where login = :1 and password = :2");
-    select_log_pw << _TSA(login.c_str()) << _TSA(password.c_str());
-    select_log_pw.Execute();
-    
-    if (!select_log_pw.FetchNext()) {
-      SACommand insert(m_con.get(), "insert into User (login, password) values (:1, :2)");
-      insert << _TSA(login.c_str()) << _TSA(password.c_str());
-      insert.Execute();
-    } else {
-      // TODO: 
+    bool credentials_correct = true;
+    if (password_is_valid(cur_password)) {
+      if (sign_choice == "2") {
+        if (password.empty()) {
+          credentials_correct = false;
+          password = cur_password;
+          asio::async_write(*m_sock.get(), asio::buffer("Repeat password: \n"),
+              [this](const system::error_code& ec, std::size_t bytes_transferred) {
+                onPasswordRequestSent(ec, bytes_transferred); 
+              });
+        } else {
+          if (password != cur_password) {
+            credentials_correct = false;
+            password = "";
+            asio::async_write(*m_sock.get(), asio::buffer("Passwords do not match. Enter password: \n"),
+                [this](const system::error_code& ec, std::size_t bytes_transferred) {
+                  onPasswordRequestSent(ec, bytes_transferred); 
+                });
+          } else {
+            credentials_correct = true;
+          }  
+        }  
+      } else {
+        password = cur_password;
+        credentials_correct = true;
+      }  
+
+      spdlog::info("Password received: {}", password);
+      if (credentials_correct) { 
+        SACommand select_log_pw(m_con.get(), "select login, password from User where login = :1 and password = :2");
+        select_log_pw << _TSA(login.c_str()) << _TSA(password.c_str());
+        select_log_pw.Execute();
+        
+        bool credentials_registered = select_log_pw.FetchNext();
+          
+        if (credentials_registered) {
+          if (sign_choice == "2") {
+            SACommand insert(m_con.get(), "insert into User (login, password) values (:1, :2)");
+            insert << _TSA(login.c_str()) << _TSA(password.c_str());
+            insert.Execute();
+          }
+          asio::async_write(*m_sock.get(), asio::buffer("Welcome! \n"),
+              [this](const system::error_code& ec, std::size_t bytes_transferred) {
+                onAccountLogin(ec, bytes_transferred); 
+              });
+        } else {
+          asio::async_write(*m_sock.get(), asio::buffer("Wrong login or password. Enter login: \n"),
+              [this](const system::error_code& ec, std::size_t bytes_transferred) {
+                onLoginRequestSent(ec, bytes_transferred); 
+              });
+        } 
+      }
+    } 
+    else {
+      password = "";
+      asio::async_write(*m_sock.get(), asio::buffer("Invalid password. Enter good password: \n"),
+          [this](const system::error_code& ec, std::size_t bytes_transferred) {
+            onPasswordRequestSent(ec, bytes_transferred); 
+          });
+    } 
+  }
+
+  void onAccountLogin(const system::error_code& ec, std::size_t bytes_transferred) {
+    if (ec.value() != 0) {
+      spdlog::error("Error in onAccountLogin, code: {}, message: ", ec.value(), ec.message());
+      onFinish();
+      return;
     } 
     onFinish();
-  } 
+  }
 
   void onFinish() {
     delete this;
@@ -174,7 +234,7 @@ private:
 
 private:
   std::shared_ptr<asio::ip::tcp::socket> m_sock;
-  std::string m_response, login, password, sign_choice;
+  std::string m_response, login, password="", sign_choice;
   std::shared_ptr<asio::streambuf> m_request, m_login_buf, m_password_buf, m_sign_choice;
   std::shared_ptr<SAConnection> m_con;
 };
@@ -265,7 +325,6 @@ public:
             }));
       m_thread_pool.push_back(std::move(th));
     }   
-
   } 
 
   void Stop() {
@@ -292,7 +351,7 @@ int main() {
 
   spdlog::set_pattern("[%d/%m/%Y] [%H:%M:%S:%f] [%n] %^[%l]%$ %v"); 
   try {
-    Server srv("/home/yen/Projects/mymsg/cfg_server.json");
+    Server srv("../cfg_server.json");
     
     unsigned int thread_pool_size = std::thread::hardware_concurrency() * 2;
     if (thread_pool_size == 0) {
