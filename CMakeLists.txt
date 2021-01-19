@@ -17,48 +17,46 @@ else()
 endif()
 
 
-PROJECT(mymsg)
+project(mymsg)
 
-add_subdirectory(nlohmann)
+# Threads
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 
-SET(THREADS_PREFER_PTHREAD_FLAG ON)
-FIND_PACKAGE(Threads REQUIRED)
-SET(CMAKE_INCLUDE_PATH ${CMAKE_INCLUDE_PATH} "/usr/local/boost_1_75_0") 
-SET(CMAKE_LIBRARY_PATH ${CMAKE_LIBRARY_PATH} "/usr/local/boost_1_75_0/libs")
-SET(CMAKE_INCLUDE_PATH ${CMAKE_INCLUDE_PATH} "/usr/local/mysql/connector-c++-/include")
-SET(CMAKE_LIBRARY_PATH ${CMAKE_LIBRARY_PATH} "/usr/local/mysql/connector-c++-/lib64")
-SET(Boost_USE_MULTITHREAD ON)
-SET(Boost_USE_STATIC_LIBS OFF)
-
-FIND_PACKAGE(OpenSSL 1.1.1 REQUIRED)
-if( OpenSSL_FOUND)
-  SET(OPENSSL_LIBRARIES ${OPENSSL_SSL_LIBRARIES} ${OPENSSL_CRYPTO_LIBRARIES} )
-ENDIF(OpenSSL_FOUND)
-
+# Boost libraries
+set(CMAKE_INCLUDE_PATH ${CMAKE_INCLUDE_PATH} "/usr/local/boost_1_75_0") 
+set(CMAKE_LIBRARY_PATH ${CMAKE_LIBRARY_PATH} "/usr/local/boost_1_75_0/libs")
+set(Boost_USE_MULTITHREAD ON)
+set(Boost_USE_STATIC_LIBS OFF)
 
 find_package(Boost 1.70.0 REQUIRED COMPONENTS system)
-IF(Boost_FOUND)
-  INCLUDE_DIRECTORIES(${Boost_INCLUDE_DIRS})
-  LINK_DIRECTORIES(${Boost_LIBRARY_DIRS})
-ENDIF(Boost_FOUND)
+if(Boost_FOUND)
+  include_directories(${Boost_INCLUDE_DIRS})
+  link_directories(${Boost_LIBRARY_DIRS})
+endif(Boost_FOUND)
 
-INCLUDE_DIRECTORIES("/usr/local/mysql/connector-c++-/include")
-LINK_DIRECTORIES("/usr/local/mysql/connector-c++-/lib64")
+# OpenSSL
+find_package(OpenSSL 1.1.1 REQUIRED)
+if(OpenSSL_FOUND)
+  set(OPENSSL_LIBRARIES ${OPENSSL_SSL_LIBRARIES} ${OPENSSL_CRYPTO_LIBRARIES} )
+endif(OpenSSL_FOUND)
 
-SET(SQLAPI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/SQLAPI)
-INCLUDE_DIRECTORIES(${SQLAPI_DIR}/include)
-LINK_DIRECTORIES(${SQLAPI_DIR}/lib)
+# SQLAPI++
+set(SQLAPI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/SQLAPI)
+include_directories(${SQLAPI_DIR}/include)
+link_directories(${SQLAPI_DIR}/lib)
 
-INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR})
+# Include to use nlohmann/json and spdlog in tree root
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+add_library(json INTERFACE)
+add_library(spdlog INTERFACE)
 
-SET(USED_LIBS ${Boost_SYSTEM_LIBRARY}
+set(USED_LIBS ${Boost_SYSTEM_LIBRARY}
               ${OPENSSL_SSL_LIBRARIES}
               ${OPENSSL_CRYPTO_LIBRARIES}
               ${SQLAPI_DIR}/lib/libsqlapi.so
               ${SQLAPI_DIR}/lib/libsqlapiu.so)
 
-add_library(json INTERFACE)
-add_library(spdlog INTERFACE)
 
 add_executable(server server.cpp)
 target_link_libraries(server PRIVATE Threads::Threads ${USED_LIBS} dl)
