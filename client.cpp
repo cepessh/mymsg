@@ -19,7 +19,6 @@ struct Session {
      const std::string& request, unsigned int id, Callback callback):
     m_sock(ios),
     m_ep(asio::ip::address::from_string(raw_ip), port_num),
-    m_request(request),
     m_id(id),
     m_callback(callback),
     m_was_cancelled(false) {
@@ -29,17 +28,17 @@ struct Session {
       m_password_request_buf.reset(new asio::streambuf);
       m_password_validity_response.reset(new asio::streambuf);
       m_buf.reset(new asio::streambuf);
+      m_action_choice.reset(new asio::streambuf);
+      m_action_buf.reset(new asio::streambuf);
     }  
 
   asio::ip::tcp::socket m_sock;
   asio::ip::tcp::endpoint m_ep;
-  std::string m_request;
-  std::string sign_choice;
+  std::string sign_choice, action_choice;
 
   std::shared_ptr<asio::streambuf> m_login_request_buf, 
     m_login_validity_buf, m_sign_choice_buf, m_buf, m_password_request_buf,
-    m_password_validity_response;
-
+    m_password_validity_response, m_action_choice, m_action_buf;
   std::string m_response;
   system::error_code m_ec;
 
@@ -118,7 +117,6 @@ public:
       [this, session] (const system::error_code& ec, std::size_t) {
         onSignUpResponseSent(ec, session);
       }); 
-    
   } 
 
   void onSignUpResponseSent(const system::error_code& ec, std::shared_ptr<Session> session) {
@@ -150,10 +148,9 @@ public:
     session->m_login_request_buf.reset(new asio::streambuf);
       
     if (response == "Input incorrect. Enter 1 or 2: ") {
-      std::string sign_choice;
-      std::cin >> sign_choice;
+      std::cin >> session->sign_choice;
 
-      asio::async_write(session->m_sock, asio::buffer(sign_choice + "\n"), 
+      asio::async_write(session->m_sock, asio::buffer(session->sign_choice + "\n"), 
         [this, session] (const system::error_code& ec, std::size_t) {
           onSignUpResponseSent(ec, session);
         }); 
@@ -262,7 +259,10 @@ public:
     
     if (password_validity_response == "Welcome! ") {
       std::cout << std::endl;
-      onRequestComplete(session);
+      asio::async_read_until(session->m_sock, *(session->m_action_choice.get()), '\n', 
+        [this, session] (const system::error_code& ec, std::size_t) {
+          onActionRequestReceived(ec, session);
+        });
     } else { 
       if (password_validity_response == "Wrong login or password. Enter login: ") {
         std::string login;
@@ -281,6 +281,77 @@ public:
       }
     } 
   } 
+
+  void onActionRequestReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
+    if (ec.value() != 0) {
+      session->m_ec = ec;
+      onRequestComplete(session);
+      return;
+    }
+    logger->info("in onActionRequestReceived");
+    std::istream istrm(session->m_action_choice.get());
+    std::string action_choice_request;
+    std::getline(istrm, action_choice_request);
+    session->m_action_choice.reset(new asio::streambuf);
+    std::cout << action_choice_request;
+
+    std::cin >> session->action_choice;
+
+    asio::async_write(session->m_sock, asio::buffer(session->action_choice + "\n"), 
+      [this, session] (const system::error_code& ec, std::size_t) {
+        onActionResponseSent(ec, session);
+      }); 
+  } 
+
+  void onActionResponseSent(const system::error_code& ec, std::shared_ptr<Session> session) {
+    if (ec.value() != 0) {
+      session->m_ec = ec;
+      onRequestComplete(session);
+      return;
+    }
+    logger->info("in onActionResponseSent");
+    
+    asio::async_read_until(session->m_sock, *(session->m_action_buf.get()), '\n', 
+      [this, session] (const system::error_code& ec, std::size_t) {
+        onActionResponseReceived(ec, session);
+      });
+
+  } 
+
+  void onActionResponseReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
+    if (ec.value() != 0) {
+      session->m_ec = ec;
+      onRequestComplete(session);
+      return;
+    }
+    logger->info("in onActionResponseReceived");
+    std::istream istrm(session->m_action_buf.get());
+    std::string response;
+    std::getline(istrm, response);
+    std::cout << response;
+    session->m_action_buf.reset(new asio::streambuf);
+      
+    if (response == "Input incorrect. Enter 1 or 2: ") {
+      std::cin >> session->action_choice;
+
+      asio::async_write(session->m_sock, asio::buffer(session->action_choice + "\n"), 
+        [this, session] (const system::error_code& ec, std::size_t) {
+          onActionResponseSent(ec, session);
+        }); 
+    } else {
+      onRequestComplete(session);
+      return;
+      std::string login;
+      std::cin >> login;
+
+      asio::async_write(session->m_sock, asio::buffer(login + "\n"), 
+        [this, session] (const system::error_code& ec, std::size_t) {
+          onLoginResponseSent(ec, session);
+        }); 
+    }
+
+  } 
+
 
   void cancelRequest(unsigned int request_id) {
     std::unique_lock<std::mutex> lock(m_active_sessions_guard);
