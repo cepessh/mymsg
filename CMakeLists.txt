@@ -48,8 +48,6 @@ link_directories(${SQLAPI_DIR}/lib)
 
 # Include to use nlohmann/json and spdlog in tree root
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-add_library(json INTERFACE)
-add_library(spdlog INTERFACE)
 
 set(USED_LIBS ${Boost_SYSTEM_LIBRARY}
               ${OPENSSL_SSL_LIBRARIES}
@@ -60,9 +58,7 @@ set(USED_LIBS ${Boost_SYSTEM_LIBRARY}
 
 add_executable(server server.cpp)
 target_link_libraries(server PRIVATE Threads::Threads ${USED_LIBS} dl)
-target_link_libraries(server INTERFACE json spdlog)
 
 add_executable(client client.cpp)
 target_link_libraries(client PRIVATE Threads::Threads ${USED_LIBS} dl)
-target_link_libraries(client INTERFACE json spdlog)
 

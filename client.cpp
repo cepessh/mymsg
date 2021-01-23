@@ -1,4 +1,5 @@
 #include<boost/asio.hpp>
+#include<mymsg_tools.h>
 #include<nlohmann/json.hpp>
 #include<spdlog/spdlog.h>
 #include<spdlog/sinks/basic_file_sink.h>
@@ -12,8 +13,9 @@ using json = nlohmann::json;
 using namespace boost;
 
 typedef void(*Callback) (unsigned int request_id, const std::string& response, const system::error_code& ec);
+const int CLEAR_LINES_CNT = 100;
 
-
+/// Struct that stores a session with the given server
 struct Session {
   Session(asio::io_context& ios, const std::string& raw_ip, unsigned short port_num,
      const std::string& request, unsigned int id, Callback callback):
@@ -22,25 +24,37 @@ struct Session {
     m_id(id),
     m_callback(callback),
     m_was_cancelled(false) {
-      m_sign_choice_buf.reset(new asio::streambuf);
+      m_sign_choice_request.reset(new asio::streambuf);
       m_login_request_buf.reset(new asio::streambuf);
       m_login_validity_buf.reset(new asio::streambuf);
       m_password_request_buf.reset(new asio::streambuf);
       m_password_validity_response.reset(new asio::streambuf);
-      m_buf.reset(new asio::streambuf);
       m_action_choice.reset(new asio::streambuf);
       m_action_buf.reset(new asio::streambuf);
+      m_chat_buf.reset(new asio::streambuf);
+      m_received_message.reset(new asio::streambuf);
     }  
 
-  asio::ip::tcp::socket m_sock;
-  asio::ip::tcp::endpoint m_ep;
-  std::string sign_choice, action_choice;
+  asio::ip::tcp::socket m_sock; //!< The socket for the client application to connect to the server
+  asio::ip::tcp::endpoint m_ep; //!< The server's endpoint
+  std::string current_chat;
+  std::string login;
+  std::string password; 
+  SignChoice sign_choice;
+  ActionChoice action_choice;
 
-  std::shared_ptr<asio::streambuf> m_login_request_buf, 
-    m_login_validity_buf, m_sign_choice_buf, m_buf, m_password_request_buf,
-    m_password_validity_response, m_action_choice, m_action_buf;
+  std::shared_ptr<asio::streambuf> m_login_request_buf;
+  std::shared_ptr<asio::streambuf> m_login_validity_buf;
+  std::shared_ptr<asio::streambuf> m_sign_choice_request;
+  std::shared_ptr<asio::streambuf> m_password_request_buf;
+  std::shared_ptr<asio::streambuf> m_password_validity_response;
+  std::shared_ptr<asio::streambuf> m_action_choice;
+  std::shared_ptr<asio::streambuf> m_action_buf;
+  std::shared_ptr<asio::streambuf> m_chat_buf;
+  std::shared_ptr<asio::streambuf> m_received_message;
+      
   std::string m_response;
-  system::error_code m_ec;
+  system::error_code m_ec; //!< Error object of the session
 
   unsigned int m_id;
   Callback m_callback;
@@ -49,9 +63,13 @@ struct Session {
   std::mutex m_cancel_guard;
 };
 
+/// Class that implements an asynchronous TCP client to interact with Service class
 class AsyncTCPClient: public asio::noncopyable {
 public:
   AsyncTCPClient() {
+    /// Initializes logger, spawns a thread, allocates OS resources and 
+    /// starts a loop by using asio::io_context
+
     initLogger(); 
     m_work.reset(new asio::io_context::work(m_ios));
     m_thread.reset(new std::thread(
@@ -60,7 +78,13 @@ public:
           }));
   } 
 
+  void clear_console() {
+    /// Cross-platform version of clearing the console
+    std::cout << std::string(CLEAR_LINES_CNT, '\n') << std::endl;
+  } 
+
   void initLogger() {
+    /// Initializes a spdlog file logger and sets the logging pattern
     try {
       logger = spdlog::basic_logger_mt("basig_logger", "../logs/client_log.txt");
     }
@@ -74,6 +98,8 @@ public:
   }
 
   void connect(const std::string& raw_ip, unsigned short port_num, Callback callback, unsigned int request_id ) {
+    /// Connects session's socket to the server's endpoint
+
     std::shared_ptr<Session> session(new Session(m_ios, raw_ip, port_num, "", request_id, callback));
     session->m_sock.open(session->m_ep.protocol());
 
@@ -86,14 +112,30 @@ public:
         onConnected(ec, session);
       });  
   }
+
+  void cancelRequest(unsigned int request_id) {
+    std::unique_lock<std::mutex> lock(m_active_sessions_guard);
+
+    auto it = m_active_sessions.find(request_id);
+    if (it != m_active_sessions.end()) {
+      std::unique_lock<std::mutex> cancel_lock(it->second->m_cancel_guard);
+      it->second->m_sock.cancel();
+    } 
+  } 
+
+  void close() {
+    m_work.reset(NULL);
+    m_thread->join();
+  } 
      
+private:
   void onConnected(const system::error_code& ec, std::shared_ptr<Session> session) {
     if (ec.value() != 0) {
       session->m_ec = ec;
       onRequestComplete(session);
       return;
     }
-  asio::async_read_until(session->m_sock, *(session->m_sign_choice_buf.get()), '\n', 
+  asio::async_read_until(session->m_sock, *(session->m_sign_choice_request.get()), '\n', 
     [this, session] (const system::error_code& ec, std::size_t) {
         onSignUpRequestReceived(ec, session);
       });
@@ -105,15 +147,27 @@ public:
       onRequestComplete(session);
       return;
     }
-    std::istream istrm(session->m_sign_choice_buf.get());
+    // Reading the server's request for a choice between sign up and sign in
+    std::istream istrm(session->m_sign_choice_request.get());
     std::string sign_choice_request;
     std::getline(istrm, sign_choice_request);
-    session->m_sign_choice_buf.reset(new asio::streambuf);
     std::cout << sign_choice_request; 
+    
+    // Reseting streambuf
+    session->m_sign_choice_request.reset(new asio::streambuf);
 
-    std::cin >> session->sign_choice;
+    // Inspecting the input format. It must be 1 or 2
+    std::string temp;
+    std::cin >> temp;
+    while (temp != "1" && temp != "2") {
+      std::cout << "Input incorrect. Enter 1 or 2: ";
+      std::cin >> temp;
+    } 
 
-    asio::async_write(session->m_sock, asio::buffer(session->sign_choice + "\n"), 
+    session->sign_choice = static_cast<SignChoice>(std::stoi(temp));
+
+    // Sending the choice to the server
+    asio::async_write(session->m_sock, asio::buffer(temp.append("\n")), 
       [this, session] (const system::error_code& ec, std::size_t) {
         onSignUpResponseSent(ec, session);
       }); 
@@ -127,45 +181,55 @@ public:
     }
     logger->info("in onSignUpResponseSent");
     
+    // Reading a login request from the server 
     asio::async_read_until(session->m_sock, *(session->m_login_request_buf.get()), '\n', 
       [this, session] (const system::error_code& ec, std::size_t) {
         onLoginRequestReceived(ec, session);
       });
   }
 
+  bool login_format_is_valid(const std::string& login) const noexcept {
+    /// Inspects the basic client-side login formatting
+
+    return true;
+  } 
+
+  void _enter_login(const system::error_code& ec, std::shared_ptr<Session> session) {
+    std::cin >> session->login;
+    while (!login_format_is_valid(session->login)) {
+      std::cout << "Invalid login. Try again: ";
+      std::cin >> session->login;
+    } 
+
+    asio::async_write(session->m_sock, asio::buffer(session->login + "\n"), 
+      [this, session] (const system::error_code& ec, std::size_t) {
+        onLoginResponseSent(ec, session);
+      }); 
+  }  
+
   void onLoginRequestReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
+    /// Sends login to the server
+
     if (ec.value() != 0) {
       session->m_ec = ec;
       onRequestComplete(session);
       return;
     }
     logger->info("in onLoginRequestReceived");
+
     std::istream istrm(session->m_login_request_buf.get());
-    std::string response;
+    std::string login_request;
+    std::getline(istrm, login_request);
+    std::cout << login_request;
 
-    std::getline(istrm, response);
-    std::cout << response;
     session->m_login_request_buf.reset(new asio::streambuf);
+    _enter_login(ec, session);
       
-    if (response == "Input incorrect. Enter 1 or 2: ") {
-      std::cin >> session->sign_choice;
-
-      asio::async_write(session->m_sock, asio::buffer(session->sign_choice + "\n"), 
-        [this, session] (const system::error_code& ec, std::size_t) {
-          onSignUpResponseSent(ec, session);
-        }); 
-    } else {
-      std::string login;
-      std::cin >> login;
-
-      asio::async_write(session->m_sock, asio::buffer(login + "\n"), 
-        [this, session] (const system::error_code& ec, std::size_t) {
-          onLoginResponseSent(ec, session);
-        }); 
-    }
   } 
   
   void onLoginResponseSent(const system::error_code& ec, std::shared_ptr<Session> session) {
+    /// Receives a login validity response from the server 
+
     if (ec.value() != 0) {
       session->m_ec = ec;
       onRequestComplete(session);
@@ -180,6 +244,8 @@ public:
   } 
 
   void onLoginValidityResponseReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
+    /// Processes login validity response 
+    
     if (ec.value() != 0) {
       session->m_ec = ec;
       onRequestComplete(session);
@@ -188,43 +254,73 @@ public:
     logger->info("in onLoginValidityResponseReceived");
     
     std::istream istrm(session->m_login_validity_buf.get());
-    std::string login_validity_response;
-    std::getline(istrm, login_validity_response);
-    std::cout << login_validity_response;
-    session->m_login_validity_buf.reset(new asio::streambuf);
-        
-    if (login_validity_response == "Login is taken. Enter unique login: " ||
-        login_validity_response == "No such login registered. Enter login: ") {
-      std::string login;
-      std::cin >> login;
+    std::string temp;
+    std::getline(istrm, temp);
+    LoginValidity login_validity_response = static_cast<LoginValidity>(std::stoi(temp));
 
-      asio::async_write(session->m_sock, asio::buffer(login + "\n"), 
-        [this, session] (const system::error_code& ec, std::size_t) {
-          onLoginResponseSent(ec, session);
-        }); 
-    } 
-    if (login_validity_response == "Enter password: ") {
-      onPasswordRequestReceived(ec, session);
+    session->m_login_validity_buf.reset(new asio::streambuf);
+    
+    /// No other user should have the same login if the choice is to sign up.
+    /// The login must be registered if the choice is to sign in. The server checks it
+    /// and the client is asked to try again if login is invalid 
+    
+    switch (login_validity_response) {  
+      case IS_TAKEN: {
+        std::cout << "Login is taken. Enter unique login: ";
+        _enter_login(ec, session);
+        break;
+      } 
+      case NOT_REGISTERED: {
+        std::cout << "No such login registered. Enter login: ";
+        _enter_login(ec, session);
+        break;
+      } 
+      case IS_VALID: {
+        onPasswordRequestReceived(ec, session);
+        break;
+      } 
     } 
   } 
 
+  bool password_format_is_valid(const std::string& password) const noexcept {
+    /// Inspects basic client-side password formatting
+    return !password.empty();
+  }
+
+  std::string _enter_password(const std::string& request, const system::error_code& ec, std::shared_ptr<Session> session) {
+    std::string res;
+    std::cout << request;
+    std::cin >> res;
+    while (!password_format_is_valid(res)) {
+      std::cout << "Invalid password. Try again: ";
+      std::cin >> res;
+    } 
+    return res;
+  } 
+
   void onPasswordRequestReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
+    /// Processes password request. Client is prompted to enter password.
+    /// Sign up. Client is prompted to repeat password
+
     if (ec.value() != 0) {
       session->m_ec = ec;
       onRequestComplete(session);
       return;
     }
+    logger->info("in onPasswordRequestReceived");
 
-    std::istream istrm(session->m_password_request_buf.get());
-    std::string response;
-    std::getline(istrm, response);
-    std::cout << response;
     session->m_password_request_buf.reset(new asio::streambuf);
-    
-    std::string password;
-    std::cin >> password;
 
-    asio::async_write(session->m_sock, asio::buffer(password + "\n"),
+    session->password = _enter_password("Enter password: ", ec, session);
+      
+    if (session->sign_choice == SIGN_UP) {
+      std::string password_repeat;
+      do {
+        password_repeat = _enter_password("Repeat password: ", ec, session);
+      } while (password_repeat != session->password);
+    } 
+
+    asio::async_write(session->m_sock, asio::buffer(session->password + "\n"),
       [this, session] (const system::error_code& ec, std::size_t) {
         onPasswordSent(ec, session);
       });
@@ -243,8 +339,13 @@ public:
   } 
 
   void onPasswordValidityResponseReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
+    /// Processes password validity response
+    
+    /// It initiates an action chain depending on the validity response. 
+    /// Client is asked to enter login and password again if the attempt to log in was not authorized.
+    /// Client is asked to repeat password in case of signing up.
+
     if (ec.value() != 0) {
-      std::cout << ec.message() << std::endl;
       session->m_ec = ec;
       onRequestComplete(session);
       return;
@@ -252,52 +353,56 @@ public:
     logger->info("in onPasswordValidityResponseReceived");
     
     std::istream istrm(session->m_password_validity_response.get());
-    std::string password_validity_response;
-    std::getline(istrm, password_validity_response);
-    std::cout << password_validity_response;
+    Authorization password_validity_response;
+    std::string temp;
+    std::getline(istrm, temp);
+
+    password_validity_response = static_cast<Authorization>(std::stoi(temp));
     session->m_password_validity_response.reset(new asio::streambuf);
     
-    if (password_validity_response == "Welcome! ") {
-      std::cout << std::endl;
-      asio::async_read_until(session->m_sock, *(session->m_action_choice.get()), '\n', 
-        [this, session] (const system::error_code& ec, std::size_t) {
-          onActionRequestReceived(ec, session);
-        });
-    } else { 
-      if (password_validity_response == "Wrong login or password. Enter login: ") {
-        std::string login;
-        std::cin >> login;
-        asio::async_write(session->m_sock, asio::buffer(login + "\n"),
+    switch(password_validity_response) {
+      case AUTHORIZED: {
+        clear_console();
+        asio::async_read_until(session->m_sock, *(session->m_action_choice.get()), '\n', 
           [this, session] (const system::error_code& ec, std::size_t) {
-            onLoginResponseSent(ec, session);
+            onActionRequestReceived(ec, session);
           });
-      } else {
-        std::string password;
-        std::cin >> password;
-        asio::async_write(session->m_sock, asio::buffer(password + "\n"),
-          [this, session] (const system::error_code& ec, std::size_t) {
-            onPasswordSent(ec, session);
-          });
+        break;
+      }
+      case WRONG_LOG_PASS: {
+        // Authorization process begins from scratch. The client is asked to enter their login.
+        std::cout << "Wrong login or password. Enter login: ";
+        _enter_login(ec, session);
+        break;
       }
     } 
   } 
 
   void onActionRequestReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
+    /// Processes action request. Prompts the user to enter valid action choice
+
     if (ec.value() != 0) {
       session->m_ec = ec;
       onRequestComplete(session);
       return;
     }
     logger->info("in onActionRequestReceived");
+
     std::istream istrm(session->m_action_choice.get());
     std::string action_choice_request;
     std::getline(istrm, action_choice_request);
-    session->m_action_choice.reset(new asio::streambuf);
     std::cout << action_choice_request;
 
-    std::cin >> session->action_choice;
+    session->m_action_choice.reset(new asio::streambuf);
+    std::string action_choice_temp;
+    std::cin >> action_choice_temp;
+    while (action_choice_temp != "1" && action_choice_temp != "2") {
+      std::cout << "Input incorrect. Enter 1 or 2: ";
+      std::cin >> action_choice_temp;
+    } 
 
-    asio::async_write(session->m_sock, asio::buffer(session->action_choice + "\n"), 
+    session->action_choice = static_cast<ActionChoice>(std::stoi(action_choice_temp));
+    asio::async_write(session->m_sock, asio::buffer(std::to_string(session->action_choice) + "\n"), 
       [this, session] (const system::error_code& ec, std::size_t) {
         onActionResponseSent(ec, session);
       }); 
@@ -315,7 +420,6 @@ public:
       [this, session] (const system::error_code& ec, std::size_t) {
         onActionResponseReceived(ec, session);
       });
-
   } 
 
   void onActionResponseReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
@@ -325,48 +429,160 @@ public:
       return;
     }
     logger->info("in onActionResponseReceived");
+
     std::istream istrm(session->m_action_buf.get());
     std::string response;
     std::getline(istrm, response);
-    std::cout << response;
-    session->m_action_buf.reset(new asio::streambuf);
-      
-    if (response == "Input incorrect. Enter 1 or 2: ") {
-      std::cin >> session->action_choice;
 
-      asio::async_write(session->m_sock, asio::buffer(session->action_choice + "\n"), 
+    int cnt = 1;
+    std::map<int, std::string> contacts; // map to store user's number in the list and login
+    session->m_action_buf.reset(new asio::streambuf);
+
+    if (session->action_choice == LIST_DIALOGS) {
+      // Action - list dialogs
+      clear_console();
+      
+      std::string delimeter = " ";
+      int pos = 0;
+      std::string cur_login; 
+
+      while ((pos = response.find(delimeter)) != std::string::npos) {
+        cur_login = response.substr(0, pos);
+        std::cout << "[" + std::to_string(cnt) + "] " + cur_login << std::endl;
+        response.erase(0, pos + delimeter.length());
+        contacts[cnt] = cur_login;
+        cnt ++;
+      } 
+      // Client is asked to enter the user's number in the list of dialogs
+      std::cout << "Enter user number: ";
+      int user_number;
+      std::cin >> user_number;
+      
+      while (user_number >= cnt) {
+        std::cout << "Incorrect number. Try again: ";
+        std::cin >> user_number;
+      } 
+
+      asio::async_write(session->m_sock, asio::buffer(contacts[user_number] + "\n"), 
         [this, session] (const system::error_code& ec, std::size_t) {
-          onActionResponseSent(ec, session);
+          onChatRequestSent(ec, session);
         }); 
     } else {
+      std::cout << response << std::flush;
       onRequestComplete(session);
       return;
-      std::string login;
-      std::cin >> login;
-
-      asio::async_write(session->m_sock, asio::buffer(login + "\n"), 
-        [this, session] (const system::error_code& ec, std::size_t) {
-          onLoginResponseSent(ec, session);
-        }); 
-    }
-
-  } 
-
-
-  void cancelRequest(unsigned int request_id) {
-    std::unique_lock<std::mutex> lock(m_active_sessions_guard);
-
-    auto it = m_active_sessions.find(request_id);
-    if (it != m_active_sessions.end()) {
-      std::unique_lock<std::mutex> cancel_lock(it->second->m_cancel_guard);
-      it->second->m_sock.cancel();
     } 
   } 
 
-  void close() {
-    m_work.reset(NULL);
-    m_thread->join();
+  void onChatRequestSent(const system::error_code& ec, std::shared_ptr<Session> session) {
+    if (ec.value() != 0) {
+      session->m_ec = ec;
+      onRequestComplete(session);
+      return;
+    }
+    logger->info("in onChatRequestSent");
+
+    asio::async_read_until(session->m_sock, *(session->m_chat_buf.get()), "\n\n", 
+      [this, session] (const system::error_code& ec, std::size_t) {
+        onCharResponseReceived(ec, session);
+      });
   } 
+
+  void onCharResponseReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
+    /// Displays interactive client's chat with chosen user. The client is then asked to enter new message.
+
+    /// The chat is interactive meaning that if another party sends a message to the client this message  
+    /// will appear in the chat.
+
+    if (ec.value() != 0) {
+      session->m_ec = ec;
+      onRequestComplete(session);
+      return;
+    }
+    logger->info("in onChatResponseReceived");
+
+    std::istream istrm(session->m_chat_buf.get());
+    session->current_chat = "";
+    std::string message;
+
+    do {
+      std::getline(istrm, message);
+      session->current_chat.append(message + "\n");
+    } while (!istrm.eof() && !message.empty());  
+
+    // \n in the last message append to current chat is doubled
+    session->current_chat.erase(session->current_chat.length() - 1);
+    session->m_chat_buf.reset(new asio::streambuf);
+
+    /*
+    asio::async_read_until(session->m_sock, *(session->m_received_message.get()), "\n", 
+      [this, session] (const system::error_code& ec, std::size_t) {
+        message_wait_loop(ec, session);
+      });
+    */
+
+    message_send_loop(ec, session);
+  } 
+
+  void message_send_loop(const system::error_code& ec, std::shared_ptr<Session> session) {
+    /// Starts loop in the current chat enabling the client to keep sending messages to another party
+    
+    clear_console();
+    std::cout << session->current_chat;
+    std::cout << "Write your message: ";
+
+    std::string new_message;
+
+    // We use a do/while loop to prevent empty messages either because of the client input
+    // or \n's that were not read before
+    do {
+      std::getline(std::cin, new_message);
+    } while (new_message.empty());
+
+    session->current_chat.append(_form_message_str(session->login, new_message));
+    asio::async_write(session->m_sock, asio::buffer(new_message + "\n"), 
+      [this, session] (const system::error_code& ec, std::size_t) {
+        message_send_loop(ec, session);
+      }); 
+  } 
+
+  void message_wait_loop(const system::error_code& ec, std::shared_ptr<Session> session) {
+    /// Starts loop in the current chat enabling the client to keep reading messages from another party
+
+    if (ec.value() != 0) {
+      session->m_ec = ec;
+      onRequestComplete(session);
+      return;
+    }
+    logger->info("in message_wait_loop");
+
+    std::istream istrm(session->m_received_message.get());
+    std::string received_message;
+    std::getline(istrm, received_message);
+    session->current_chat.append(received_message + "\n");
+    session->m_received_message.reset(new asio::streambuf);
+
+    clear_console();
+    std::cout << session->current_chat;
+    std::cout << "Write your message: ";
+    
+    asio::async_read_until(session->m_sock, *(session->m_received_message.get()), "\n", 
+      [this, session] (const system::error_code& ec, std::size_t) {
+        message_wait_loop(ec, session);
+      });
+  }
+
+  void onMessageSent(const system::error_code& ec, std::shared_ptr<Session> session) {
+    if (ec.value() != 0) {
+      session->m_ec = ec;
+      onRequestComplete(session);
+      return;
+    }
+
+    logger->info("in onMessageSent");
+
+  } 
+
 
 private:
   void onRequestComplete(std::shared_ptr<Session> session) {

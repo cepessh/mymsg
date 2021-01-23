@@ -1,9 +1,7 @@
-create database Test;
-
 CREATE TABLE `Dialog` (
 	`dialog_id` INT NOT NULL AUTO_INCREMENT,
-	`login1` varchar(20) NOT NULL,
-	`login2` varchar(20) NOT NULL,
+	`login1_id` INT NOT NULL,
+	`login2_id` INT NOT NULL,
 	`created_at` DATETIME NOT NULL,
 	`updated_at` DATETIME NOT NULL,
 	PRIMARY KEY (`dialog_id`)
@@ -18,11 +16,12 @@ CREATE TABLE `User` (
 
 CREATE TABLE `Message` (
 	`message_id` INT NOT NULL AUTO_INCREMENT,
-	`login1` varchar(20) NOT NULL,
-	`login2` varchar(20) NOT NULL,
+	`login_sender_id` INT NOT NULL,
+	`login_recipient_id` INT NOT NULL,
 	`date` DATETIME NOT NULL,
 	`content` TEXT NOT NULL,
 	`dialog_id` INT NOT NULL,
+	`read_by_recipient` BOOLEAN NOT NULL,
 	PRIMARY KEY (`message_id`)
 );
 
