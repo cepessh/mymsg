@@ -42,7 +42,6 @@ namespace DBquery {
 
 
   long get_user_id(std::shared_ptr<SAConnection> con, const std::string& user_login) {
-    spdlog::info("in _get_user_id, login: {}", user_login);
     SACommand select_user_id(con.get(), "select user_id from User where login = :1");
     select_user_id << _TSA(user_login.c_str());
     select_user_id.Execute();
@@ -51,7 +50,6 @@ namespace DBquery {
   } 
   
   std::string get_login(std::shared_ptr<SAConnection> con, const long user_id) {
-    spdlog::info("in _get_login");
     SACommand select_user_id(con.get(), "select login from User where user_id = :1");
     select_user_id << user_id;
     select_user_id.Execute();
@@ -61,7 +59,6 @@ namespace DBquery {
   } 
 
   std::vector<long> get_dialogs_id_list(std::shared_ptr<SAConnection> con, const std::string& user_login) {
-    spdlog::info("in _get_dialogs_id_list");
     long user_id = get_user_id(con, user_login);
     SACommand select_dialog_id(con.get(), "select dialog_id from `User/Dialog` where user_id = :1");
     select_dialog_id << user_id;
@@ -75,7 +72,6 @@ namespace DBquery {
 
   std::string get_another_party_login(std::shared_ptr<SAConnection> con, const long dialog_id,
       const std::string& login) {
-    spdlog::info("in _get_another_party_login");
     std::string login1, login2;
     
     SACommand select_logins_id(con.get(),
@@ -97,30 +93,7 @@ namespace DBquery {
     return login1;
   } 
 
-  std::vector<std::tuple<long, long, std::string, std::string>> get_messages(std::shared_ptr<SAConnection> con, 
-      const long id1, const long id2) {
-    std::vector<std::tuple<long, long, std::string, std::string>> res;
-    try {
-      spdlog::info("in _get_messages_ids");
-      SACommand select_messages_ids(con.get(),
-          "select login_sender_id, login_recipient_id, date, content"
-          "from Message where (login_sender_id = :1 and login_recipient_id = :2) or " 
-          "(login_sender_id = :2 and login_recipient_id = :1) order by date");
-      std::cout << id1 << " " << id2 << std::endl;
-      select_messages_ids << id1 << id2;
-      select_messages_ids.Execute();
-
-      while (select_messages_ids.FetchNext()) {
-        long id = select_messages_ids.Field("message_id").asLong();
-      } 
-    } catch (SAException &x) {
-      spdlog::error(x.ErrText().GetMultiByteChars());
-    } 
-    return res;
-  } 
-
   std::string get_dialogs_list(std::shared_ptr<SAConnection> con, const std::string& login) { 
-    spdlog::info("in _get_dialogs_list");
     std::vector<long> dialogs_id_list = get_dialogs_id_list(con, login);
     std::string res = "";
     for (int i = 0; i < dialogs_id_list.size(); i ++) {
@@ -131,8 +104,6 @@ namespace DBquery {
 
   void insert_message(std::shared_ptr<SAConnection> con, const long login_sender_id,
       const long login_recipient_id, const std::string& content, const long dialog_id) {
-    spdlog::info("in _insert_message, content: '{}'", content);
-
     try {
       SACommand insert_message(con.get(), 
           "insert into Message(login_sender_id, login_recipient_id, date, content, dialog_id) values "
@@ -143,8 +114,32 @@ namespace DBquery {
         << _TSA(date.c_str()) << _TSA(content.c_str()) << dialog_id;
       insert_message.Execute();
     } catch (SAException &x) {
-      spdlog::error(x.ErrText().GetMultiByteChars());
+      spdlog::error("Error in insert_message: " + std::string(x.ErrText().GetMultiByteChars()));
     }
+  } 
+
+  std::string get_another_party_messages(std::shared_ptr<SAConnection> con, const long id_sender,
+      const long id_recipient, const long dialog_id, std::map<long, std::string>& id_to_log) {
+
+    std::string new_messages = "";
+    try {
+      SACommand select_new_messages(con.get(),
+          "select login_sender_id, login_recipient_id, date, content, read_by_recipient "
+          "from Message where login_sender_id = :1 and login_recipient_id = :2 "
+          "and dialog_id = :3 and read_by_recipient = FALSE");
+      select_new_messages << id_sender << id_recipient << dialog_id;
+      select_new_messages.Execute();
+      
+      while (select_new_messages.FetchNext()) {
+        new_messages.append(_form_message_str(
+              select_new_messages.Field("date").asString().GetMultiByteChars(),
+              id_to_log[select_new_messages.Field("login_sender_id").asLong()], 
+              select_new_messages.Field("content").asString().GetMultiByteChars()));
+      }
+    } catch (SAException &x) {
+      spdlog::error("Error in get_another_party_messages: " + std::string(x.ErrText().GetMultiByteChars()));
+    }
+    return new_messages;   
   } 
 }
 

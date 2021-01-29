@@ -7,6 +7,9 @@
 #include<sstream>
 
 
+const std::string UNREAD_BORDER = std::string(60, '-');
+const int POLLING_INTERVAL = 100;
+
 enum SignChoice {
   SIGN_IN = 1,
   SIGN_UP
@@ -29,10 +32,12 @@ enum LoginValidity {
   IS_VALID
 };
 
-enum Authorization {
+enum Status {
   AUTHORIZED,
-  WRONG_LOG_PASS
+  WRONG_LOG_PASS,
+  READY_TO_CHAT
 };
+
 
 std::string _get_date_str() {
   auto t = std::time(nullptr);
