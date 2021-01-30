@@ -20,7 +20,7 @@ const int CLEAR_LINES_CNT = 100;
 /// Struct that stores a session with the given server
 struct Session {
   Session(asio::io_context& ios, const std::string& raw_ip, unsigned short port_num,
-     const std::string& request, unsigned int id, Callback callback):
+     const std::string& /*request*/, unsigned int id, Callback callback):
     m_sock(ios),
     m_ep(asio::ip::address::from_string(raw_ip), port_num),
     m_id(id),
@@ -189,13 +189,13 @@ private:
       });
   }
 
-  bool login_format_is_valid(const std::string& login) const noexcept {
+  bool login_format_is_valid(const std::string& /*login*/) const noexcept {
     /// Inspects the basic client-side login formatting
 
     return true;
   } 
 
-  void _enter_login(const system::error_code& ec, std::shared_ptr<Session> session) {
+  void _enter_login(const system::error_code& /*ec*/, std::shared_ptr<Session> session) {
     std::cin >> session->login;
     while (!login_format_is_valid(session->login)) {
       std::cout << "Invalid login. Try again: ";
@@ -288,7 +288,7 @@ private:
     return !password.empty();
   }
 
-  std::string _enter_password(const std::string& request, const system::error_code& ec, std::shared_ptr<Session> session) {
+  std::string _enter_password(const std::string& request, const system::error_code& /*ec*/, std::shared_ptr<Session> /*session*/) {
     std::string res;
     std::cout << request;
     std::cin >> res;
@@ -461,7 +461,7 @@ private:
         clear_console();
         
         std::string delimeter = " ";
-        int pos = 0;
+        std::string::size_type pos = 0;
         std::string cur_login; 
         std::set<std::string> valid_numbers; 
         // Response is expected to contain logins of the client's contacts
@@ -688,7 +688,7 @@ private:
   Console m_console;
 };
 
-void handler(unsigned int request_id, const std::string& response, const system::error_code& ec) {
+void handler(unsigned int /*request_id*/, const std::string& /*response*/, const system::error_code& /*ec*/) {
 
   /*  
   if (ec.value() == 0) {

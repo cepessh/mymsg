@@ -61,7 +61,7 @@ public:
     return m_sock;
   } 
 
-  void send_to_chat(const std::string& new_message, const system::error_code& ec, std::size_t bytes_transferred) {
+  void send_to_chat(const std::string& new_message, const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     if (ec.value() != 0) {
       spdlog::error("Error in send_to_chat, code: {}, message: ", ec.value(), ec.message());
       onFinish();
@@ -75,7 +75,7 @@ public:
   } 
 
 private:
-  void onSignUpRequestSent(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onSignUpRequestSent(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     if (ec.value() != 0) {
       spdlog::error("Error in onSignUpRequestSent, code: {}, message: ", ec.value(), ec.message());
       onFinish();
@@ -87,7 +87,7 @@ private:
       });
   }
 
-  void onSignUpResponseReceived(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onSignUpResponseReceived(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Processes sign in/sign up client's choice. Then prompts the client to enter their login
 
     if (ec.value() != 0) {
@@ -109,7 +109,7 @@ private:
       });
   }
 
-  void onLoginRequestSent(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onLoginRequestSent(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Initiates reading of client's login
 
     if (ec.value() != 0) {
@@ -125,7 +125,7 @@ private:
       });
   } 
 
-  void onLoginReceived(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onLoginReceived(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Processes client's login
 
     /// Sign in: client's login must be registered. It should be found in the database
@@ -185,7 +185,7 @@ private:
     }
   } 
 
-  void onPasswordRequestSent(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onPasswordRequestSent(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Initiates read of client's password
 
     if (ec.value() != 0) {
@@ -201,7 +201,7 @@ private:
       });
   }
 
-  void onPasswordReceived(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onPasswordReceived(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Processes client's password
 
     /// Sign in. The login/password combination must match one in the database. 
@@ -320,7 +320,7 @@ private:
     return res;
   } 
 
-  void onAccountLogin(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onAccountLogin(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Sends possible action choices
 
     if (ec.value() != 0) {
@@ -336,7 +336,7 @@ private:
       });
   }
   
-  void onActionRequestSent(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onActionRequestSent(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Reads action choice
 
     if (ec.value() != 0) {
@@ -352,7 +352,7 @@ private:
       });
   } 
 
-  void onActionResponseReceived(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onActionResponseReceived(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Processes action choice 
 
     if (ec.value() != 0) {
@@ -386,7 +386,7 @@ private:
     } 
   } 
 
-  void onDialogsListSent(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onDialogsListSent(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Reads user number in the dialog list
 
     if (ec.value() != 0) {
@@ -403,7 +403,7 @@ private:
   }
 
 
-  void onDialogUserLoginReceived(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onDialogUserLoginReceived(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Sends the chat with the chosen user
 
     if (ec.value() != 0) {
@@ -426,7 +426,7 @@ private:
       });
   } 
 
-  void onChatSent(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onChatSent(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Reads new message from the client and sends messages from another party
 
     if (ec.value() != 0) {
@@ -444,7 +444,7 @@ private:
 
   void onReceivedReady(const system::error_code& ec, std::size_t bytes_transferred);
 
-  void receive_message(const system::error_code& ec, std::size_t bytes_transferred) {
+  void receive_message(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     if (ec.value() != 0) {
       spdlog::error("Error in receive_message, code: {}, message: ", ec.value(), ec.message());
       onFinish();
@@ -460,7 +460,7 @@ private:
   
   void onMessageReceived(const system::error_code& ec, std::size_t bytes_transferred);
 
-  void onAnotherPartyMessageSent(const system::error_code& ec, std::size_t bytes_transferred) {
+  void onAnotherPartyMessageSent(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     if (ec.value() != 0) {
       spdlog::error("Error in onAnotherPartyMessageSent, code: {}, message: ", ec.value(), ec.message());
       onFinish();
@@ -476,6 +476,7 @@ private:
 private:
   std::shared_ptr<asio::ip::tcp::socket> m_sock; ///< Pointer to an active socket that is used to communicate
                                                  ///< with the client
+  std::shared_ptr<SAConnection> m_con; ///< Pointer to SAConnection object that connects to the MySQL database
   int service_id;   
   std::string m_response;
   std::string login;
@@ -501,7 +502,6 @@ private:
   // Id to login translation tool map
   std::map<long, std::string> id_to_log;
 
-  std::shared_ptr<SAConnection> m_con; ///< Pointer to SAConnection object that connects to the MySQL database
 };
 
 /// Class that accepts connection to the server
@@ -536,9 +536,9 @@ private:
 
 private:
   asio::io_context& m_ios;
+  std::shared_ptr<SAConnection> m_con;///< Pointer to a database connection object
   asio::ip::tcp::acceptor m_acceptor; ///< low-level asio::ip::tcp::acceptor object
   std::atomic<bool> m_isStopped;      ///< atomic variable used to stop acceptor between threads
-  std::shared_ptr<SAConnection> m_con;///< Pointer to a database connection object
 }; 
 
 /// Class that initiates connection with the database and accepting connections
@@ -574,7 +574,7 @@ public:
     acc.reset(new Acceptor(m_ios, port_num, con));
     acc->Start();
 
-    for (int i = 0; i < thread_pool_size; i ++) {
+    for (size_t i = 0; i < thread_pool_size; i ++) {
       std::unique_ptr<std::thread> th(new std::thread(
             [this]() {
               m_ios.run();
