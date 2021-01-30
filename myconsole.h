@@ -1,6 +1,6 @@
 #include <termios.h>
 #include <unistd.h>
-#include <stdio.h>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -9,6 +9,7 @@
 #include <iostream>
 #include <sstream>
 #include <thread>
+using namespace std::chrono_literals;
 
 /// reads a character from console without echo.
 int getChar()
@@ -34,14 +35,14 @@ class Console
     std::string _prompt;
 
   public:
-    Console() {}
+    Console() = default;
 
     Console(const Console &) = delete;
     Console &operator=(const Console &) = delete;
 
     std::string read();
 
-    void write(const char *text, size_t size);
+    void write(const char *text, size_t len);
     void write(const char *text) { write(text, strlen(text)); }
     void write(const std::string &text) { write(text.c_str(), text.size()); }
 };
@@ -75,16 +76,18 @@ std::string Console::read()
         case BackSpc:
         {
             std::lock_guard<std::mutex> lock(_mtx);
-            if (_input.empty())
+            if (_input.empty()) {
                 break;
+            }
             _input.pop_back();
             std::cout << "\b \b" << std::flush;
         }
         break;
         default:
         {
-            if (c < ' ' || c >= '\x7f')
+            if (c < ' ' || c >= '\x7f') {
                 break;
+            }
             std::lock_guard<std::mutex> lock(_mtx);
             _input += c;
             std::cout << (char)c << std::flush;
@@ -96,8 +99,9 @@ std::string Console::read()
 
 void Console::write(const char *text, size_t len)
 {
-    if (!len)
+    if (len == 0u) {
         return;
+    }
     bool eol = text[len - 1] == '\n';
     std::lock_guard<std::mutex> lock(_mtx);
     // remove current input echo
@@ -110,8 +114,9 @@ void Console::write(const char *text, size_t len)
     }
     // print text
     std::cout << text;
-    if (!eol)
+    if (!eol) {
         std::cout << std::endl;
+    }
     // print current input echo
     std::cout << _prompt << _input << std::flush;
 }
@@ -119,14 +124,11 @@ void Console::write(const char *text, size_t len)
 struct Flags //this flag is shared between both the threads
 {
     // flag: true then exit communication thread and main loop
-    bool exit;
+    bool exit = false;
     // flag: true then start data processing
-    bool start;
+    bool start = true;
     // the mini console
     Console console;
-
-    // constructor.
-    Flags() : exit(false), start(true) {}
 };
 
 void dataProc(Flags &shared)
@@ -136,9 +138,10 @@ void dataProc(Flags &shared)
     {
         while (!shared.start)
         {
-            if (shared.exit)
+            if (shared.exit) {
                 return;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            std::this_thread::sleep_for(100ms);
         }
         shared.console.write("Starting data processing.");
         for (;;)
@@ -149,13 +152,14 @@ void dataProc(Flags &shared)
                 shared.console.write("Data processing stopped.");
                 while (!shared.start || shared.exit)
                 {
-                    if (shared.exit)
+                    if (shared.exit) {
                         return;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                    std::this_thread::sleep_for(100ms);
                 }
                 shared.console.write("Data processing restarted.");
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            std::this_thread::sleep_for(250ms);
             {
                 std::ostringstream fmt;
                 fmt << "Cake " << ++i;
@@ -167,16 +171,14 @@ void dataProc(Flags &shared)
     }
 }
 
-void processInput(const std::string &input, Flags &shared)
-{
-
-    if (strcasecmp(input.c_str(),"start")==0)
+void processInput(const std::string& input, Flags& shared) {
+    if (strcasecmp(input.c_str(), "start") == 0) {
         shared.start = true;
-    else if (strcasecmp(input.c_str(),"stop")==0)
+    } else if (strcasecmp(input.c_str(), "stop") == 0) {
         shared.start = false;
-    else if (strcasecmp(input.c_str(),"exit")==0)
+    } else if (strcasecmp(input.c_str(), "exit") == 0) {
         shared.exit = true;
-    else if (input.size())
+    } else if (!input.empty()) {
         shared.console.write("Wrong command!");
+    }
 }
-

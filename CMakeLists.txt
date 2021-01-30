@@ -23,7 +23,7 @@ set(Boost_USE_STATIC_LIBS OFF)
 
 find_package(Boost 1.70.0 REQUIRED COMPONENTS system)
 if(Boost_FOUND)
-  include_directories(${Boost_INCLUDE_DIRS})
+  include_directories(SYSTEM ${Boost_INCLUDE_DIRS})
   link_directories(${Boost_LIBRARY_DIRS})
 endif(Boost_FOUND)
 
@@ -35,11 +35,11 @@ endif(OpenSSL_FOUND)
 
 # SQLAPI++
 set(SQLAPI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/SQLAPI)
-include_directories(${SQLAPI_DIR}/include)
+include_directories(SYSTEM ${SQLAPI_DIR}/include)
 link_directories(${SQLAPI_DIR}/lib)
 
 # Include to use nlohmann/json and spdlog in tree root
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(USED_LIBS ${Boost_SYSTEM_LIBRARY}
               ${OPENSSL_SSL_LIBRARIES}
