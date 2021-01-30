@@ -703,7 +703,7 @@ void handler(unsigned int /*request_id*/, const std::string& /*response*/, const
 
 
 int main() {
-  std::ifstream cfg_istrm("../cfg_client.json");
+  std::ifstream cfg_istrm("./cfg_client.json");
   json cfg = json::parse(cfg_istrm);
 
   std::string raw_ip = cfg["server_ip"];

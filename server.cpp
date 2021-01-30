@@ -701,7 +701,7 @@ int main() {
 
   spdlog::set_pattern("[%d/%m/%Y] [%H:%M:%S:%f] [%n] %^[%l]%$ %v"); 
   try {
-    Server srv("../cfg_server.json");
+    Server srv("./cfg_server.json");
     
     unsigned int thread_pool_size = std::thread::hardware_concurrency() * 2;
     if (thread_pool_size == 0) {
