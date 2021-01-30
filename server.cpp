@@ -1,4 +1,5 @@
 #include<boost/asio.hpp>
+#include<myconsole.h>
 #include<mymsg_tools.h>
 #include<mymsg_mysql_query.h>
 #include<nlohmann/json.hpp>

@@ -1,4 +1,5 @@
 #include<boost/asio.hpp>
+#include<myconsole.h>
 #include<mymsg_tools.h>
 #include<nlohmann/json.hpp>
 #include<spdlog/spdlog.h>
@@ -81,7 +82,7 @@ public:
 
   void clear_console() {
     /// Cross-platform version of clearing the console
-    std::cout << std::string(CLEAR_LINES_CNT, '\n') << std::endl;
+    m_console.write(std::string(CLEAR_LINES_CNT, '\n'));
   } 
 
   void initLogger() {
@@ -152,17 +153,16 @@ private:
     std::istream istrm(session->m_sign_choice_request.get());
     std::string sign_choice_request;
     std::getline(istrm, sign_choice_request);
-    std::cout << sign_choice_request; 
+    m_console.write(sign_choice_request); 
     
     // Reseting streambuf
     session->m_sign_choice_request.reset(new asio::streambuf);
 
     // Inspecting the input format. It must be 1 or 2
-    std::string temp;
-    std::cin >> temp;
+    std::string temp = m_console.read();
     while (temp != "1" && temp != "2") {
-      std::cout << "Input incorrect. Enter 1 or 2: ";
-      std::cin >> temp;
+      m_console.write("Input incorrect. Enter 1 or 2: ");
+      temp = m_console.read();
     } 
 
     session->sign_choice = static_cast<SignChoice>(std::stoi(temp));
@@ -557,10 +557,13 @@ private:
     }
     logger->info("'{}' in onSentReady", session->login);
 
-    asio::async_read_until(session->m_sock, *(session->m_received_message.get()), '\n', 
-      [this, session] (const system::error_code& ec, std::size_t) {
-        message_wait_loop(ec, session);
-      });
+    msg_wait_thread.reset(new std::thread([this, ec, session] {
+      asio::async_read_until(session->m_sock, *(session->m_received_message.get()), "\n", 
+        [this, session] (const system::error_code& ec, std::size_t) {
+          message_wait_loop(ec, session);
+        });
+      }));
+    msg_wait_thread->detach();
 
     msg_thread.reset(new std::thread([this, ec, session] {
       message_send_loop(ec, session);
@@ -579,23 +582,24 @@ private:
     }
     logger->info("'{}' in message_send_loop", session->login);
     
-    // std::unique_lock<std::mutex> lock_std_out(std_out_guard);
 
     clear_console();
-    std::cout << session->current_chat;
-    std::cout << "Write your message: " << std::flush;
+    m_console.write(session->current_chat);
+    m_console.write("Write your message: ");
 
     std::string new_message;
 
     // We use a do/while loop to prevent empty messages either because of the client input
     // or \n's that were not read before
+
     do {
-      std::getline(std::cin, new_message);
+      new_message = m_console.read();
     } while (new_message.empty());
+    
 
+    std::unique_lock<std::mutex> lock_std_out(std_out_guard);
     session->current_chat.append(_form_message_str(session->login, new_message));
-
-    // lock_std_out.unlock();
+    lock_std_out.unlock();
 
     asio::async_write(session->m_sock, asio::buffer(new_message + "\n"), 
       [this, session] (const system::error_code& ec, std::size_t) {
@@ -620,14 +624,13 @@ private:
     session->m_received_message.reset(new asio::streambuf);
 
     std::unique_lock<std::mutex> lock_std_out(std_out_wait_guard);
-
     session->current_chat.append(received_message + "\n");
+    lock_std_out.unlock();
 
     clear_console();
-    std::cout << session->current_chat;
-    std::cout << "Write your message: ";
+    m_console.write(session->current_chat);
+    m_console.write("Write your message: ");
     
-    lock_std_out.unlock();
 
     asio::async_read_until(session->m_sock, *(session->m_received_message.get()), "\n", 
       [this, session] (const system::error_code& ec, std::size_t) {
@@ -682,6 +685,7 @@ private:
   std::mutex std_out_wait_guard;
   std::unique_ptr<std::thread> msg_thread;
   std::unique_ptr<std::thread> msg_wait_thread;
+  Console m_console;
 };
 
 void handler(unsigned int request_id, const std::string& response, const system::error_code& ec) {
