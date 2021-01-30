@@ -67,7 +67,7 @@ public:
 
   void send_to_chat(const std::string& new_message, const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     if (ec.value() != 0) {
-      spdlog::error("Error in send_to_chat, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in send_to_chat, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     }
@@ -81,7 +81,7 @@ public:
 private:
   void onSignUpRequestSent(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     if (ec.value() != 0) {
-      spdlog::error("Error in onSignUpRequestSent, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onSignUpRequestSent, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     } 
@@ -95,7 +95,7 @@ private:
     /// Processes sign in/sign up client's choice. Then prompts the client to enter their login
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onSignUpResponseReceived, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onSignUpResponseReceived, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     } 
@@ -117,7 +117,7 @@ private:
     /// Initiates reading of client's login
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onLoginRequestSent, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onLoginRequestSent, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     } 
@@ -136,7 +136,7 @@ private:
     /// Sign up: client's login must be unique. It should not be found in the database
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onLoginReceived, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onLoginReceived, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     } 
@@ -193,7 +193,7 @@ private:
     /// Initiates read of client's password
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onPasswordRequestSent, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onPasswordRequestSent, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     } 
@@ -213,7 +213,7 @@ private:
     /// Sign up. The databases is updated with the new login/password combination.
     
     if (ec.value() != 0) {
-      spdlog::error("Error in onPasswordReceived, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onPasswordReceived, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     } 
@@ -328,7 +328,7 @@ private:
     /// Sends possible action choices
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onAccountLogin, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onAccountLogin, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     }
@@ -344,7 +344,7 @@ private:
     /// Reads action choice
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onActionRequestSent, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onActionRequestSent, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     }
@@ -360,7 +360,7 @@ private:
     /// Processes action choice 
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onActionResponseReceived, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onActionResponseReceived, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     }
@@ -394,7 +394,7 @@ private:
     /// Reads user number in the dialog list
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onDialogsListSent, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onDialogsListSent, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     }
@@ -411,7 +411,7 @@ private:
     /// Sends the chat with the chosen user
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onDialogUserLoginReceived, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onDialogUserLoginReceived, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     }
@@ -434,7 +434,7 @@ private:
     /// Reads new message from the client and sends messages from another party
 
     if (ec.value() != 0) {
-      spdlog::error("Error in onChatSent, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onChatSent, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     }
@@ -450,7 +450,7 @@ private:
 
   void receive_message(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     if (ec.value() != 0) {
-      spdlog::error("Error in receive_message, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in receive_message, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     }
@@ -466,7 +466,7 @@ private:
 
   void onAnotherPartyMessageSent(const system::error_code& ec, std::size_t /*bytes_transferred*/) {
     if (ec.value() != 0) {
-      spdlog::error("Error in onAnotherPartyMessageSent, code: {}, message: ", ec.value(), ec.message());
+      spdlog::error("Error in onAnotherPartyMessageSent, code: {}, message: {}", ec.value(), ec.message());
       onFinish();
       return;
     }
@@ -623,7 +623,7 @@ void Acceptor::onAccept(const system::error_code& ec, std::shared_ptr<asio::ip::
     }  
     Server::launched_services[service_id]->StartHandling();
   } else {
-    spdlog::error("Error in onAccept, code: {}, message: ", ec.value(), ec.message());
+    spdlog::error("Error in onAccept, code: {}, message: {}", ec.value(), ec.message());
   }  
 
   if (!m_isStopped.load()) {
@@ -641,7 +641,7 @@ void Service::onFinish() {
 
 void Service::onReceivedReady(const system::error_code& ec, std::size_t bytes_transferred) {
   if (ec.value() != 0) {
-    spdlog::error("Error in onReceivedReady, code: {}, message: ", ec.value(), ec.message());
+    spdlog::error("Error in onReceivedReady, code: {}, message: {}", ec.value(), ec.message());
     onFinish();
     return;
   }
@@ -666,7 +666,7 @@ void Service::onMessageReceived(const system::error_code& ec, std::size_t bytes_
   /// Updates the database with the new message
 
   if (ec.value() != 0) {
-    spdlog::error("Error in onMessageReceived, code: {}, message: ", ec.value(), ec.message());
+    spdlog::error("Error in onMessageReceived, code: {}, message: {}", ec.value(), ec.message());
     onFinish();
     return;
   }
