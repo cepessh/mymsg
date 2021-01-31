@@ -1,5 +1,9 @@
 #include<boost/asio.hpp>
 #include <memory>
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <boost/system/detail/error_code.hpp>
 #include<myconsole.h>
 #include<mymsg_mysql_query.h>
@@ -44,7 +48,7 @@ namespace Tracker {
 class Service {
 public:
   Service(asio::ip::tcp::socket&& sock, std::shared_ptr<SAConnection> con, const int service_id):
-    m_sock(std::move(sock)),
+    m_sock(std::move(sock)), // NOTE the socket executor is a strand now
     m_con(std::move(con)),
     service_id(service_id) 
   { }
@@ -493,8 +497,6 @@ private:
   asio::streambuf m_another_party_message;
   asio::streambuf m_ready_to_chat;
 
-  std::unique_ptr<std::thread> checker_th; 
-
   // Id to login translation tool map
   std::map<long, std::string> id_to_log;
 
@@ -503,10 +505,9 @@ private:
 /// Class that accepts connection to the server
 class Acceptor {
 public:
-  Acceptor(asio::io_context& ios, unsigned short port_num, std::shared_ptr<SAConnection> con):
-    m_ios(ios),
+  Acceptor(asio::any_io_executor ex, unsigned short port_num, std::shared_ptr<SAConnection> con):
     m_con(std::move(con)),
-    m_acceptor(m_ios, asio::ip::tcp::endpoint(asio::ip::address_v4::any(), port_num)),
+    m_acceptor(ex, asio::ip::tcp::endpoint(asio::ip::address_v4::any(), port_num)),
     m_isStopped(false) {}
 
   void Start() {
@@ -522,7 +523,7 @@ private:
   void InitAccept() {
     /// Initiates low-level async_accept. Creates an active socket to communicate with the client 
 
-    std::shared_ptr<asio::ip::tcp::socket> sock(new asio::ip::tcp::socket(m_ios));
+    auto sock = std::make_shared<asio::ip::tcp::socket>(make_strand(m_acceptor.get_executor()));
     m_acceptor.async_accept(*sock, [this, sock](const error_code& ec) {
           onAccept(ec, sock);
         });
@@ -531,7 +532,6 @@ private:
   void onAccept(const error_code& ec, std::shared_ptr<asio::ip::tcp::socket> sock); 
 
 private:
-  asio::io_context& m_ios;
   std::shared_ptr<SAConnection> m_con;///< Pointer to a database connection object
   asio::ip::tcp::acceptor m_acceptor; ///< low-level asio::ip::tcp::acceptor object
   std::atomic<bool> m_isStopped;      ///< atomic variable used to stop acceptor between threads
@@ -541,7 +541,8 @@ private:
 
 class Server {
 public:
-  Server(std::string cfg_path) {
+  Server(std::string cfg_path, unsigned thread_pool_size) : m_ios(thread_pool_size) {
+    assert(thread_pool_size > 0);
     /// Initiates connection with the database
 
     std::ifstream cfg_istrm(cfg_path);
@@ -563,36 +564,27 @@ public:
     spdlog::info("Connected to database {}", connection_string);
   }
   
-  void Start(unsigned short port_num, unsigned int thread_pool_size) {
+  void Start(unsigned short port_num) {
     /// Creates and starts Acceptor instance, spawns threads with initiated asio::io_context::run 
-
-    assert(thread_pool_size > 0);
-    acc = std::make_unique<Acceptor>(m_ios, port_num, con);
+    acc = std::make_unique<Acceptor>(m_ios.get_executor(), port_num, con);
     acc->Start();
-
-    for (size_t i = 0; i < thread_pool_size; i ++) {
-      std::unique_ptr<std::thread> th(new std::thread(
-            [this]() {
-              m_ios.run();
-            }));
-      m_thread_pool.push_back(std::move(th));
-    }   
   } 
 
   void Stop() {
     /// Halts Acceptor instance and waits till event loops in spawned threads end
+    m_work.reset();
     acc->Stop();
-    m_ios.stop();
-
-    for (auto& th: m_thread_pool) {
-      th->join();
-    } 
+    m_ios.stop(); // TODO instead shutdown sessions
+    m_ios.join();
   } 
   static std::map<int, Service * > launched_services;
   
 private:
-  asio::io_context m_ios;
-  std::unique_ptr<asio::io_context::work> m_work;
+  using executor = asio::thread_pool::executor_type;
+  using work_guard = asio::executor_work_guard<executor>;
+  using strand = asio::strand<executor>;
+  asio::thread_pool m_ios;
+  work_guard m_work { m_ios.get_executor() };
   std::unique_ptr<Acceptor> acc;
   std::vector<std::unique_ptr<std::thread>> m_thread_pool;
   std::shared_ptr<SAConnection> con;
@@ -691,17 +683,16 @@ int main() {
 
   spdlog::set_pattern("[%d/%m/%Y] [%H:%M:%S:%f] [%n] %^[%l]%$ %v"); 
   try {
-    Server srv("./cfg_server.json");
-    
     unsigned int thread_pool_size = std::thread::hardware_concurrency() * 2;
     if (thread_pool_size == 0) {
       thread_pool_size = DEFAULT_THREAD_POOL_SIZE;
     } 
 
-    srv.Start(port_num, thread_pool_size);
+    Server srv("./cfg_server.json", thread_pool_size);
+    
+    srv.Start(port_num);
     std::this_thread::sleep_for(500s);
     srv.Stop();
-
   } 
   catch (boost::system::system_error& e) {
     std::cout << e.what() << " " << e.code().message();
