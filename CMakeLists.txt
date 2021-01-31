@@ -53,7 +53,7 @@ ADD_DEFINITIONS(-DBOOST_LOG_DYN_LINK)
 ADD_DEFINITIONS(-DBOOST_USE_ASAN)
 ADD_DEFINITIONS(-DBOOST_USE_VALGRIND)
 SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic ") # -Wconversion
-SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20 ") # -fcoroutines ")
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 ") # -fcoroutines ")
 #SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-function -Wno-unused")
 #SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O3 -pthread -march=native")
 SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address,undefined")
