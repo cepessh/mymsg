@@ -1,6 +1,7 @@
 #include "boost/asio/io_context.hpp"
 #include<boost/asio.hpp>
 #include <boost/asio/buffer.hpp>
+#include <boost/asio/streambuf.hpp>
 #include <iterator>
 #include <memory>
 #include"myconsole.h"
@@ -24,6 +25,10 @@ using namespace boost;
 using Callback = std::function<void(unsigned, const std::string&, const system::error_code&)>;
 const int CLEAR_LINES_CNT = 100;
 
+static void clearbuf(asio::streambuf& buf) {
+    buf.consume(buf.size());
+}
+
 /// Struct that stores a session with the given server
 struct Session {
   Session(asio::any_io_executor ex, const std::string& raw_ip, unsigned short port_num,
@@ -33,15 +38,15 @@ struct Session {
     m_id(id),
     m_callback(std::move(callback)),
     m_was_cancelled(false) {
-      m_sign_choice_request.reset(new asio::streambuf);
-      m_login_request_buf.reset(new asio::streambuf);
-      m_login_validity_buf.reset(new asio::streambuf);
-      m_password_request_buf.reset(new asio::streambuf);
-      m_password_validity_response.reset(new asio::streambuf);
-      m_action_choice.reset(new asio::streambuf);
-      m_action_buf.reset(new asio::streambuf);
-      m_chat_buf.reset(new asio::streambuf);
-      m_received_message.reset(new asio::streambuf);
+      clearbuf(m_sign_choice_request);
+      clearbuf(m_login_request_buf);
+      clearbuf(m_login_validity_buf);
+      clearbuf(m_password_request_buf);
+      clearbuf(m_password_validity_response);
+      clearbuf(m_action_choice);
+      clearbuf(m_action_buf);
+      clearbuf(m_chat_buf);
+      clearbuf(m_received_message);
     }  
 
   asio::ip::tcp::socket m_sock; //!< The socket for the client application to connect to the server
@@ -52,15 +57,15 @@ struct Session {
   SignChoice sign_choice;
   ActionChoice action_choice;
 
-  std::shared_ptr<asio::streambuf> m_login_request_buf;
-  std::shared_ptr<asio::streambuf> m_login_validity_buf;
-  std::shared_ptr<asio::streambuf> m_sign_choice_request;
-  std::shared_ptr<asio::streambuf> m_password_request_buf;
-  std::shared_ptr<asio::streambuf> m_password_validity_response;
-  std::shared_ptr<asio::streambuf> m_action_choice;
-  std::shared_ptr<asio::streambuf> m_action_buf;
-  std::shared_ptr<asio::streambuf> m_chat_buf;
-  std::shared_ptr<asio::streambuf> m_received_message;
+  asio::streambuf m_login_request_buf;
+  asio::streambuf m_login_validity_buf;
+  asio::streambuf m_sign_choice_request;
+  asio::streambuf m_password_request_buf;
+  asio::streambuf m_password_validity_response;
+  asio::streambuf m_action_choice;
+  asio::streambuf m_action_buf;
+  asio::streambuf m_chat_buf;
+  asio::streambuf m_received_message;
       
   std::string m_response;
   system::error_code m_ec; //!< Error object of the session
@@ -141,7 +146,7 @@ private:
       onRequestComplete(session);
       return;
     }
-  asio::async_read_until(session->m_sock, *(session->m_sign_choice_request.get()), '\n', 
+  asio::async_read_until(session->m_sock, session->m_sign_choice_request, '\n', 
     [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         onSignUpRequestReceived(ec, session);
       });
@@ -155,14 +160,14 @@ private:
     }
     // Reading the server's request for a choice between sign up and sign in
     {
-      std::istream istrm(session->m_sign_choice_request.get());
+      std::istream istrm(&session->m_sign_choice_request);
       std::string sign_choice_request;
       std::getline(istrm, sign_choice_request);
       m_console.write(sign_choice_request); 
     }
     
     // Reseting streambuf
-    session->m_sign_choice_request.reset(new asio::streambuf);
+    clearbuf(session->m_sign_choice_request);
 
     post(ui_strand, [this, session] {
       // Inspecting the input format. It must be 1 or 2
@@ -191,7 +196,7 @@ private:
     logger->info("in onSignUpResponseSent");
     
     // Reading a login request from the server 
-    asio::async_read_until(session->m_sock, *(session->m_login_request_buf.get()), '\n', 
+    asio::async_read_until(session->m_sock, session->m_login_request_buf, '\n', 
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         onLoginRequestReceived(ec, session);
       });
@@ -228,13 +233,13 @@ private:
     logger->info("in onLoginRequestReceived");
 
     {
-      std::istream istrm(session->m_login_request_buf.get());
+      std::istream istrm(&session->m_login_request_buf);
       std::string login_request;
       std::getline(istrm, login_request);
       std::cout << login_request;
     }
 
-    session->m_login_request_buf.reset(new asio::streambuf);
+    clearbuf(session->m_login_request_buf);
     _enter_login(ec, session);
       
   } 
@@ -249,7 +254,7 @@ private:
     }
     logger->info("in onLoginResponseSent");
 
-    asio::async_read_until(session->m_sock, *(session->m_login_validity_buf.get()), '\n', 
+    asio::async_read_until(session->m_sock, session->m_login_validity_buf, '\n', 
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         onLoginValidityResponseReceived(ec, session);
       });
@@ -268,13 +273,13 @@ private:
     LoginValidity login_validity_response = LoginValidity::NOT_REGISTERED;
 
     {
-      std::istream istrm(session->m_login_validity_buf.get());
+      std::istream istrm(&session->m_login_validity_buf);
       std::string temp;
       std::getline(istrm, temp);
       login_validity_response = static_cast<LoginValidity>(std::stoi(temp));
     }
 
-    session->m_login_validity_buf.reset(new asio::streambuf);
+    clearbuf(session->m_login_validity_buf);
     
     /// No other user should have the same login if the choice is to sign up.
     /// The login must be registered if the choice is to sign in. The server checks it
@@ -325,7 +330,7 @@ private:
     }
     logger->info("in onPasswordRequestReceived");
 
-    session->m_password_request_buf.reset(new asio::streambuf);
+    clearbuf(session->m_password_request_buf);
 
     post(ui_strand, [=] {
         session->password = _enter_password("Enter password: ");
@@ -354,7 +359,7 @@ private:
     }
     logger->info("in onPasswordSent");
 
-    asio::async_read_until(session->m_sock, *(session->m_password_validity_response.get()), '\n', 
+    asio::async_read_until(session->m_sock, session->m_password_validity_response, '\n', 
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         onPasswordValidityResponseReceived(ec, session);
       });
@@ -376,19 +381,19 @@ private:
     
     Status password_validity_response;
     {
-      std::istream istrm(session->m_password_validity_response.get());
+      std::istream istrm(&session->m_password_validity_response);
       std::string temp;
       std::getline(istrm, temp);
       password_validity_response = static_cast<Status>(std::stoi(temp));
     }
 
-    session->m_password_validity_response.reset(new asio::streambuf);
+    clearbuf(session->m_password_validity_response);
     
     switch(password_validity_response) {
       case AUTHORIZED: {
         clear_console();
 
-        asio::async_read_until(session->m_sock, *(session->m_action_choice.get()), '\n', 
+        asio::async_read_until(session->m_sock, session->m_action_choice, '\n', 
           [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
             onActionRequestReceived(ec, session);
           });
@@ -416,7 +421,7 @@ private:
     logger->info("in onActionRequestReceived");
 
     {
-      std::istream istrm(session->m_action_choice.get());
+      std::istream istrm(&session->m_action_choice);
       std::string action_choice_request;
       std::getline(istrm, action_choice_request);
       std::cout << action_choice_request;
@@ -424,7 +429,7 @@ private:
 
     post(ui_strand, [this, session] {
       {
-        session->m_action_choice.reset(new asio::streambuf);
+        clearbuf(session->m_action_choice);
 
         std::string action_choice_temp;
 
@@ -456,7 +461,7 @@ private:
     }
     logger->info("in onActionResponseSent");
     
-    asio::async_read_until(session->m_sock, *(session->m_action_buf.get()), '\n', 
+    asio::async_read_until(session->m_sock, session->m_action_buf, '\n', 
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         onActionResponseReceived(ec, session);
       });
@@ -477,10 +482,10 @@ private:
 
     std::string response;
     {
-      std::istream istrm(session->m_action_buf.get());
+      std::istream istrm(&session->m_action_buf);
       std::getline(istrm, response);
     }
-    session->m_action_buf.reset(new asio::streambuf);
+    clearbuf(session->m_action_buf);
 
     switch (session->action_choice) {
       case LIST_DIALOGS: {
@@ -540,7 +545,7 @@ private:
     }
     logger->info("in onChatRequestSent");
 
-    asio::async_read_until(session->m_sock, *(session->m_chat_buf.get()), "\n\n", 
+    asio::async_read_until(session->m_sock, session->m_chat_buf, "\n\n", 
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         onCharResponseReceived(ec, session);
       });
@@ -559,11 +564,10 @@ private:
     }
     logger->info("'{}' in onChatResponseReceived", session->login);
 
-    auto& buf = *session->m_chat_buf;
-    session->current_chat.resize(buf.size());
-    asio::buffer_copy(asio::buffer(session->current_chat), buf.data());
+    session->current_chat.resize(session->m_chat_buf.size());
+    asio::buffer_copy(asio::buffer(session->current_chat), session->m_chat_buf.data());
 
-    session->m_chat_buf.reset(new asio::streambuf);
+    clearbuf(session->m_chat_buf);
 
     asio::async_write(session->m_sock, asio::buffer(std::to_string(READY_TO_CHAT) + "\n"), 
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
@@ -582,7 +586,7 @@ private:
 
       logger->info("'{}' starting message_wait_loop", session->login);
       asio::async_read_until(
-          session->m_sock, *(session->m_received_message.get()), "\n",
+          session->m_sock, session->m_received_message, "\n",
           [this, session](const system::error_code& ec,
                           std::size_t /*bytes_transferred*/) {
               message_wait_loop(ec, session);
@@ -635,11 +639,11 @@ private:
 
     std::string received_message;
     {
-      std::istream istrm(session->m_received_message.get());
+      std::istream istrm(&session->m_received_message);
       std::getline(istrm, received_message);
     }
 
-    session->m_received_message.reset(new asio::streambuf);
+    clearbuf(session->m_received_message);
 
     session->current_chat.append(received_message + "\n");
 
@@ -648,7 +652,7 @@ private:
     m_console.write("Write your message: ");
     
 
-    asio::async_read_until(session->m_sock, *(session->m_received_message.get()), "\n", 
+    asio::async_read_until(session->m_sock, session->m_received_message, "\n", 
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         message_wait_loop(ec, session);
       });
