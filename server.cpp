@@ -1,31 +1,30 @@
-#include<boost/asio.hpp>
+#include <algorithm>
+#include <boost/core/ignore_unused.hpp>
+#include <boost/asio.hpp>
 #include <memory>
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/executor_work_guard.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/thread_pool.hpp>
-#include <boost/system/detail/error_code.hpp>
-#include<myconsole.h>
-#include<mymsg_mysql_query.h>
-#include<mymsg_tools.h>
+#include <cmath>
+#include <myconsole.h>
+#include <mymsg_mysql_query.h>
+#include <mymsg_tools.h>
 
-#include<nlohmann/json.hpp>
-#include<SQLAPI.h>
-#include<spdlog/spdlog.h>
+#include <SQLAPI.h>
+#include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
-#include<atomic>
-#include<ctime>
-#include<fstream>
-#include<iomanip>
-#include<iostream>
-#include<memory>
-#include<sstream>
-#include<thread>
+#include <atomic>
+#include <ctime>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <memory>
+#include <sstream>
+#include <thread>
+#include <type_traits>
 #include <utility>
-
 
 using json = nlohmann::json;
 namespace asio = boost::asio;
+using asio::ip::tcp;
 using namespace std::literals;
 using boost::system::error_code;
 
@@ -37,27 +36,23 @@ static void clearbuf(asio::streambuf& buf, bool warn_discard = true) {
   buf.consume(buf.size());
 }
 
-/// Struct to track active sessions of clients
-namespace Tracker {
-  static std::mutex current_sessions_guard; ///< mutex to lock the map of current sessions between threads
-  static std::map<long, long> current_sessions; 
-  static std::map<long, int> client_to_service_id;
-} 
-
-/// Class that provides the actual service in the client-service model
-class Service {
+/// Class that provides the actual seesion in the client-seesion model
+class Session : public std::enable_shared_from_this<Session> {
 public:
-  Service(asio::ip::tcp::socket&& sock, std::shared_ptr<SAConnection> con, const int service_id):
+  using DeliverMessage = std::function<void(long recipient_id, std::string sender_login, std::string message)>;
+
+  Session(tcp::socket&& sock, std::shared_ptr<SAConnection> con, const int session_id, DeliverMessage delivery):
     m_sock(std::move(sock)), // NOTE the socket executor is a strand now
     m_con(std::move(con)),
-    m_service_id(service_id) 
+    m_session_id(session_id),
+    m_delivery(delivery)
   { }
 
   void StartHandling() {
     /// Initiates communication with the client
 
     asio::async_write(m_sock, asio::buffer("Sign in [1] or Sign up [2]: \n"sv),
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onSignUpRequestSent(ec, bytes_transferred); 
       });
   }
@@ -65,20 +60,25 @@ public:
   void send_to_chat(std::string new_message) {
     m_outbuf = std::move(new_message);
     asio::async_write(m_sock, asio::buffer(m_outbuf),
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onAnotherPartyMessageSent(ec, bytes_transferred); 
       });
   } 
 
+  void send_to_chat(std::string sender_login, std::string new_message) {
+    send_to_chat(_form_message_str(sender_login, new_message));
+  } 
+
+  long get_client_login_id() const { return m_client_id; }
+
 private:
   void onSignUpRequestSent(const error_code& ec, std::size_t /*bytes_transferred*/) {
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onSignUpRequestSent, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     } 
     asio::async_read_until(m_sock, m_inbuf, '\n',
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onSignUpResponseReceived(ec, bytes_transferred);
       });
   }
@@ -86,9 +86,8 @@ private:
   void onSignUpResponseReceived(const error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Processes sign in/sign up client's choice. Then prompts the client to enter their login
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onSignUpResponseReceived, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     } 
     
@@ -102,7 +101,7 @@ private:
     clearbuf(m_inbuf);
 
     asio::async_write(m_sock, asio::buffer("Enter login: \n"sv),
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onLoginRequestSent(ec, bytes_transferred); 
       });
   }
@@ -110,15 +109,14 @@ private:
   void onLoginRequestSent(const error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Initiates reading of client's login
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onLoginRequestSent, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     } 
     spdlog::info("Login request sent");
 
     asio::async_read_until(m_sock, m_inbuf, '\n',
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onLoginReceived(ec, bytes_transferred);
       });
   } 
@@ -129,9 +127,8 @@ private:
     /// Sign in: client's login must be registered. It should be found in the database
     /// Sign up: client's login must be unique. It should not be found in the database
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onLoginReceived, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     } 
 
@@ -146,9 +143,8 @@ private:
     bool login_is_valid = true;
     MySQLQueryState login_in_database = DBquery::is_login_found(m_con, m_login);
     
-    // Shutdown Service instance if there is error with the mysql query or mysql server
+    // Shutdown session instance if there is error with the mysql query or mysql server
     if (login_in_database == MYSQL_ERROR) {
-      onFinish();
       return;
     } 
 
@@ -159,7 +155,7 @@ private:
           login_is_valid = false;
           m_outbuf = std::to_string(NOT_REGISTERED) + "\n";
           asio::async_write(m_sock, asio::buffer(m_outbuf),
-            [this](const error_code& ec, std::size_t bytes_transferred) {
+            [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
               onLoginRequestSent(ec, bytes_transferred); 
             });
         } 
@@ -170,7 +166,7 @@ private:
           login_is_valid = false;
           m_outbuf = std::to_string(IS_TAKEN) + "\n";
           asio::async_write(m_sock, asio::buffer(m_outbuf),
-            [this](const error_code& ec, std::size_t bytes_transferred) {
+            [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
               onLoginRequestSent(ec, bytes_transferred); 
             });
         }
@@ -182,7 +178,7 @@ private:
     if (login_is_valid) {
       m_outbuf = std::to_string(IS_VALID) +"\n";
       asio::async_write(m_sock, asio::buffer(m_outbuf),
-        [this](const error_code& ec, std::size_t bytes_transferred) {
+        [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
           onPasswordRequestSent(ec, bytes_transferred); 
         });
     }
@@ -191,15 +187,14 @@ private:
   void onPasswordRequestSent(const error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Initiates read of client's password
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onPasswordRequestSent, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     } 
     spdlog::info("Password request sent");
 
     asio::async_read_until(m_sock, m_inbuf, '\n',
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onPasswordReceived(ec, bytes_transferred);
       });
   }
@@ -211,9 +206,8 @@ private:
     /// Otherwise the client is asked to retry logging in.
     /// Sign up. The databases is updated with the new login/password combination.
     
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onPasswordReceived, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     } 
 
@@ -231,13 +225,13 @@ private:
         if (credentials_registered) {
           m_outbuf = std::to_string(AUTHORIZED) + "\n";
           asio::async_write(m_sock, asio::buffer(m_outbuf),
-            [this](const error_code& ec, std::size_t bytes_transferred) {
+            [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
               onAccountLogin(ec, bytes_transferred); 
             });
         } else {
           m_outbuf = std::to_string(WRONG_LOG_PASS) + "\n";
           asio::async_write(m_sock, asio::buffer(m_outbuf),
-            [this](const error_code& ec, std::size_t bytes_transferred) {
+            [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
               onLoginRequestSent(ec, bytes_transferred); 
             });
         } 
@@ -249,7 +243,7 @@ private:
 
         m_outbuf = std::to_string(AUTHORIZED) + "\n";
         asio::async_write(m_sock, asio::buffer(m_outbuf),
-          [this](const error_code& ec, std::size_t bytes_transferred) {
+          [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
             onAccountLogin(ec, bytes_transferred); 
           });
         break;
@@ -258,23 +252,16 @@ private:
   }
 
   std::string get_chat_with(const std::string& login_initiator, const std::string& login_another) {
-    /// Displays chat with another party and records chat status in Tracker::current_session
+    /// Displays chat with another party
 
     /// Creates chat string, sets unread messages delimeter, updates the database
     /// marking corresponding messages as read
 
-    spdlog::info("[{}] in get_chat_with", m_service_id);
+    spdlog::info("[{}] in get_chat_with", m_session_id);
 
     std::string res;
     m_client_id = DBquery::get_user_id(m_con, login_initiator); // The client's id in the database
     m_another_party_id = DBquery::get_user_id(m_con, login_another); // The id of another party
-
-    // Recording the client's current chat status
-    {
-      std::unique_lock<std::mutex> session_map_lock(Tracker::current_sessions_guard); 
-      Tracker::current_sessions[m_client_id] = m_another_party_id;
-      Tracker::client_to_service_id[m_client_id] = m_service_id;
-    }
 
     m_id_to_log[m_client_id] = login_initiator;
     m_id_to_log[m_another_party_id] = login_another;
@@ -332,15 +319,14 @@ private:
   void onAccountLogin(const error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Sends possible action choices
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onAccountLogin, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     }
     spdlog::info("'{}' has logged in", m_login);
      
     asio::async_write(m_sock, asio::buffer("List dialogs [1] or Add contact [2]: \n"sv),
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onActionRequestSent(ec, bytes_transferred); 
       });
   }
@@ -348,15 +334,14 @@ private:
   void onActionRequestSent(const error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Reads action choice
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onActionRequestSent, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     }
     spdlog::info("Action request sent");
 
     asio::async_read_until(m_sock, m_inbuf, '\n',
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onActionResponseReceived(ec, bytes_transferred);
       });
   } 
@@ -364,9 +349,8 @@ private:
   void onActionResponseReceived(const error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Processes action choice 
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onActionResponseReceived, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     }
 
@@ -387,7 +371,7 @@ private:
 
         m_outbuf = DBquery::get_dialogs_list(m_con, m_login) + "\n";
         asio::async_write(m_sock, asio::buffer(m_outbuf),
-          [this](const error_code& ec, std::size_t bytes_transferred) {
+          [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
             onDialogsListSent(ec, bytes_transferred); 
           });
         break;
@@ -401,15 +385,14 @@ private:
   void onDialogsListSent(const error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Reads user number in the dialog list
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onDialogsListSent, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     }
-    spdlog::info("[{}] in onDialogsListSent", m_service_id);
+    spdlog::info("[{}] in onDialogsListSent", m_session_id);
 
     asio::async_read_until(m_sock, m_inbuf, '\n',
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onDialogUserLoginReceived(ec, bytes_transferred);
       });
   }
@@ -418,12 +401,11 @@ private:
   void onDialogUserLoginReceived(const error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Sends the chat with the chosen user
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onDialogUserLoginReceived, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     }
-    spdlog::info("[{}] in onDialogUserLoginReceived", m_service_id);
+    spdlog::info("[{}] in onDialogUserLoginReceived", m_session_id);
 
     {
       std::istream istrm(&m_inbuf);
@@ -435,7 +417,7 @@ private:
     m_outbuf = get_chat_with(m_login, m_login_another) + "\n\n";
 
     asio::async_write(m_sock, asio::buffer(m_outbuf),
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onChatSent(ec, bytes_transferred); 
       });
   } 
@@ -443,14 +425,13 @@ private:
   void onChatSent(const error_code& ec, std::size_t /*bytes_transferred*/) {
     /// Reads new message from the client and sends messages from another party
 
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onChatSent, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     }
     
     asio::async_read_until(m_sock, m_inbuf, '\n',
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onReceivedReady(ec, bytes_transferred);
       });
 
@@ -459,10 +440,10 @@ private:
   void onReceivedReady(const error_code& ec, std::size_t bytes_transferred);
 
   void receive_message() {
-    spdlog::info("[{}] in receive_message", m_service_id);
+    spdlog::info("[{}] in receive_message", m_session_id);
 
     asio::async_read_until(m_sock, m_inbuf, '\n',
-      [this](const error_code& ec, std::size_t bytes_transferred) {
+      [this, self = shared_from_this()](const error_code& ec, std::size_t bytes_transferred) {
         onMessageReceived(ec, bytes_transferred);
       });
   } 
@@ -470,23 +451,21 @@ private:
   void onMessageReceived(const error_code& ec, std::size_t bytes_transferred);
 
   void onAnotherPartyMessageSent(const error_code& ec, std::size_t /*bytes_transferred*/) {
-    if (ec.value() != 0) {
+    if (ec.failed()) {
       spdlog::error("Error in onAnotherPartyMessageSent, code: {}, message: {}", ec.value(), ec.message());
-      onFinish();
       return;
     }
 
-    spdlog::info("[{}] in onAnotherPartyMessageSent", m_service_id);
+    spdlog::info("[{}] in onAnotherPartyMessageSent", m_session_id);
  } 
 
-  void onFinish(); 
-
 private:
-  asio::ip::tcp::socket m_sock; ///< active socket that is used to communicate
+  tcp::socket m_sock; ///< active socket that is used to communicate
                                 ///< with the client
   std::shared_ptr<SAConnection> m_con; ///< Pointer to SAConnection object that
                                        ///< connects to the MySQL database
-  int m_service_id;
+  int m_session_id;
+  DeliverMessage m_delivery;
   std::string m_login;
   std::string m_password = "";
   std::string m_login_another;
@@ -500,15 +479,16 @@ private:
 
   // Id to login translation tool map
   std::map<long, std::string> m_id_to_log;
-
 };
 
 /// Class that accepts connection to the server
 class Acceptor {
 public:
-  Acceptor(asio::any_io_executor ex, unsigned short port_num, std::shared_ptr<SAConnection> con):
+  using Callback = std::function<void(tcp::socket&&)>;
+  Acceptor(asio::any_io_executor ex, unsigned short port_num, std::shared_ptr<SAConnection> con, Callback callback):
     m_con(std::move(con)),
-    m_acceptor(ex, asio::ip::tcp::endpoint(asio::ip::address_v4::any(), port_num)),
+    m_callback(std::move(callback)),
+    m_acceptor(ex, tcp::endpoint(asio::ip::address_v4::any(), port_num)),
     m_isStopped(false) {}
 
   void Start() {
@@ -524,18 +504,19 @@ private:
   void InitAccept() {
     /// Initiates low-level async_accept. Creates an active socket to communicate with the client 
 
-    auto sock = std::make_shared<asio::ip::tcp::socket>(make_strand(m_acceptor.get_executor()));
+    auto sock = std::make_shared<tcp::socket>(make_strand(m_acceptor.get_executor()));
     m_acceptor.async_accept(*sock, [this, sock](const error_code& ec) {
           onAccept(ec, sock);
         });
   } 
 
-  void onAccept(const error_code& ec, std::shared_ptr<asio::ip::tcp::socket> sock); 
+  void onAccept(const error_code& ec, std::shared_ptr<tcp::socket> sock); 
 
 private:
-  std::shared_ptr<SAConnection> m_con;///< Pointer to a database connection object
-  asio::ip::tcp::acceptor m_acceptor; ///< low-level asio::ip::tcp::acceptor object
-  std::atomic<bool> m_isStopped;      ///< atomic variable used to stop acceptor between threads
+  std::shared_ptr<SAConnection> m_con;       ///< Pointer to a database connection object
+  Callback                      m_callback;
+  tcp::acceptor                 m_acceptor;  ///< low-level acceptor object
+  std::atomic<bool>             m_isStopped; ///< atomic variable used to stop acceptor between threads
 }; 
 
 /// Class that initiates connection with the database and accepting connections
@@ -566,8 +547,11 @@ public:
   }
   
   void Start(unsigned short port_num) {
-    /// Creates and starts Acceptor instance, spawns threads with initiated asio::io_context::run 
-    m_acc = std::make_unique<Acceptor>(m_ios.get_executor(), port_num, m_con);
+    /// Creates and starts Acceptor instance, spawns threads with initiated asio::io_context::run
+    auto async_callback = [this](tcp::socket&& socket) {
+        post(m_strand, [this, s = std::move(socket)]() mutable { _new_connection(std::move(s)); });
+    };
+    m_acc = std::make_unique<Acceptor>(m_strand, port_num, m_con, async_callback);
     m_acc->Start();
   } 
 
@@ -575,36 +559,77 @@ public:
     /// Halts Acceptor instance and waits till event loops in spawned threads end
     m_work.reset();
     m_acc->Stop();
-    m_ios.stop(); // TODO instead shutdown sessions
+    m_ios.stop(); // TODO instead shutdown m_sessions
     m_ios.join();
   } 
-  static std::map<int, Service * > launched_services;
   
 private:
   using executor   = asio::thread_pool::executor_type;
   using work_guard = asio::executor_work_guard<executor>;
   using strand     = asio::strand<executor>;
   asio::thread_pool m_ios;
-  work_guard m_work { m_ios.get_executor() };
-  std::unique_ptr<Acceptor> m_acc;
-  std::vector<std::unique_ptr<std::thread>> m_thread_pool;
+  work_guard        m_work   { m_ios.get_executor()              };
+  strand            m_strand { make_strand(m_ios.get_executor()) };
+  std::unique_ptr<Acceptor>     m_acc;
   std::shared_ptr<SAConnection> m_con;
-};
 
-std::map<int, Service *> Server::launched_services;
+  // now private, synchronization managed by strand
+  std::map<int, std::weak_ptr<Session> > m_sessions;
+
+  void _deliver_message(long recipient_id, std::string sender_login, std::string msg) {
+    assert(m_strand.running_in_this_thread());
+
+    auto it = std::find_if(begin(m_sessions), end(m_sessions), [recipient_id](auto& entry) {
+          auto& [session_id, weak] = entry;
+          if (auto sess = weak.lock()) {
+            return sess->get_client_login_id() == recipient_id;
+          }
+          return false;
+        });
+
+    if (it != end(m_sessions)) {
+      if (auto sess = it->second.lock()) {
+        spdlog::info("[{}] sends to live recipient_id {}: '{}'", sender_login,
+            recipient_id, msg);
+        sess->send_to_chat(sender_login, msg);
+      }
+    }
+  }
+
+  void _new_connection(tcp::socket&& socket) {
+      // garbage collect deceased sessions:
+#if __cpp_lib_erase_if // requires c++20
+      std::erase_if(m_sessions, [](auto& p) { return p.second.expired(); });
+#else
+      // do it manually, but I'm too lazy right now
+#endif
+      int session_id = m_sessions.empty() ? 1 : m_sessions.rbegin()->first + 1;
+
+      auto async_deliver = [this](long recipient_id, std::string sender_login, std::string msg) mutable {
+          post(m_strand, [this, r = recipient_id, sender_login, msg = std::move(msg)]() mutable {
+              _deliver_message(r, std::move(sender_login), std::move(msg));
+          });
+      };
+
+      auto session = std::make_shared<Session>(std::move(socket), m_con, session_id, async_deliver);
+
+      bool ok = m_sessions.emplace(session_id, session).second;
+      assert(ok); // session_id should be unique
+      boost::ignore_unused(ok);
+
+      session->StartHandling();
+  }
+};
 
 const unsigned int DEFAULT_THREAD_POOL_SIZE = 2;
 
-void Acceptor::onAccept(const error_code& ec, std::shared_ptr<asio::ip::tcp::socket> sock) {
+void Acceptor::onAccept(const error_code& ec, std::shared_ptr<tcp::socket> sock) {
   /// Logs accept status and closes m_acceptor if there is a signal to stop
 
-  if (ec.value() == 0) {
+  if (!ec.failed()) {
     spdlog::info("Accepted connection from IP: {}", sock->remote_endpoint().address().to_string());
-    int service_id = Server::launched_services.empty()
-      ? 1
-      : Server::launched_services.rbegin()->first + 1;
-    auto p = Server::launched_services[service_id] = new Service(std::move(*sock), m_con, service_id);
-    p->StartHandling();
+    m_callback(std::move(*sock));
+    sock.reset();
   } else {
     spdlog::error("Error in onAccept, code: {}, message: {}", ec.value(), ec.message());
   }  
@@ -616,18 +641,12 @@ void Acceptor::onAccept(const error_code& ec, std::shared_ptr<asio::ip::tcp::soc
   } 
 } 
 
-void Service::onFinish() {
-  Server::launched_services.erase(m_service_id);
-  delete this; // TODO use std::enable_shared_from_this
-} 
-
-void Service::onReceivedReady(const error_code& ec, std::size_t /*bytes_transferred*/) {
-  if (ec.value() != 0) {
+void Session::onReceivedReady(const error_code& ec, std::size_t /*bytes_transferred*/) {
+  if (ec.failed()) {
     spdlog::error("Error in onReceivedReady, code: {}, message: {}", ec.value(), ec.message());
-    onFinish();
     return;
   }
-  spdlog::info("[{}] in onReceivedReady", m_service_id);
+  spdlog::info("[{}] in onReceivedReady", m_session_id);
 
   Status status = Status::WRONG_LOG_PASS;
   {
@@ -641,18 +660,14 @@ void Service::onReceivedReady(const error_code& ec, std::size_t /*bytes_transfer
 
   if (status == READY_TO_CHAT) {
     receive_message();
-  } else {
-    onFinish();
-    return;
   } 
 } 
 
-void Service::onMessageReceived(const error_code& ec, std::size_t /*bytes_transferred*/) {
+void Session::onMessageReceived(const error_code& ec, std::size_t /*bytes_transferred*/) {
   /// Updates the database with the new message
 
-  if (ec.value() != 0) {
+  if (ec.failed()) {
     spdlog::error("Error in onMessageReceived, code: {}, message: {}", ec.value(), ec.message());
-    onFinish();
     return;
   }
 
@@ -663,22 +678,9 @@ void Service::onMessageReceived(const error_code& ec, std::size_t /*bytes_transf
   }
   clearbuf(m_inbuf);
 
-  spdlog::info("[{}] received message '{}'", m_service_id, new_message);
+  spdlog::info("[{}] received message '{}'", m_session_id, new_message);
 
-  {
-    std::unique_lock<std::mutex> tracker_lock(Tracker::current_sessions_guard);
-
-    if (Tracker::current_sessions.find(m_another_party_id) != Tracker::current_sessions.end()) {
-      if (Tracker::current_sessions[m_another_party_id] == m_client_id) {
-        int another_party_service_id = Tracker::client_to_service_id[m_another_party_id];
-        std::string formatted_msg = _form_message_str(m_login, new_message);
-
-        spdlog::info("[{}] sends to chat '{}'", another_party_service_id, new_message);
-
-        Server::launched_services[another_party_service_id]->send_to_chat(std::move(formatted_msg));
-      }
-    }
-  }
+  m_delivery(m_another_party_id, m_login, new_message);
 
   DBquery::insert_message(m_con, m_client_id, m_another_party_id, new_message, m_dialog_id);
   receive_message();
