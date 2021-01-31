@@ -23,9 +23,9 @@ const int CLEAR_LINES_CNT = 100;
 
 /// Struct that stores a session with the given server
 struct Session {
-  Session(asio::io_context& ios, const std::string& raw_ip, unsigned short port_num,
+  Session(asio::any_io_executor ex, const std::string& raw_ip, unsigned short port_num,
      const std::string& /*request*/, unsigned int id, Callback callback):
-    m_sock(ios),
+    m_sock(ex),
     m_ep(asio::ip::address::from_string(raw_ip), port_num),
     m_id(id),
     m_callback(std::move(callback)),
@@ -73,13 +73,12 @@ struct Session {
 class AsyncTCPClient: public asio::noncopyable {
 public:
   AsyncTCPClient() {
-    /// Initializes logger, spawns a thread, allocates OS resources and 
-    /// starts a loop by using asio::io_context
-
     initLogger(); 
-    m_work = std::make_unique<asio::io_context::work>(m_ios); // TODO use make_work_guard
-    m_thread = std::make_unique<std::thread>([this]() { m_ios.run(); });
   } 
+
+  ~AsyncTCPClient() {
+    close();
+  }
 
   void clear_console() {
     /// Cross-platform version of clearing the console
@@ -89,7 +88,8 @@ public:
   void initLogger() {
     /// Initializes a spdlog file logger and sets the logging pattern
     try {
-      logger = spdlog::basic_logger_mt("basig_logger", "../logs/client_log.txt");
+      logger = spdlog::basic_logger_mt("basic_logger",
+              "client_log" + std::to_string(getpid()) + ".txt");
     }
     catch (const spdlog::spdlog_ex& ex) {
       logger = spdlog::default_logger();
@@ -103,7 +103,7 @@ public:
   void connect(const std::string& raw_ip, unsigned short port_num, Callback callback, unsigned int request_id ) {
     /// Connects session's socket to the server's endpoint
 
-    std::shared_ptr<Session> session(new Session(m_ios, raw_ip, port_num, "", request_id, callback));
+    auto session = std::make_shared<Session>(io_strand, raw_ip, port_num, "", request_id, callback);
     session->m_sock.open(session->m_ep.protocol());
 
     std::unique_lock<std::mutex> lock(m_active_sessions_guard);
@@ -128,7 +128,7 @@ public:
 
   void close() {
     m_work.reset();
-    m_thread->join();
+    m_ios.join();
   } 
      
 private:
@@ -151,28 +151,32 @@ private:
       return;
     }
     // Reading the server's request for a choice between sign up and sign in
-    std::istream istrm(session->m_sign_choice_request.get());
-    std::string sign_choice_request;
-    std::getline(istrm, sign_choice_request);
-    m_console.write(sign_choice_request); 
+    {
+      std::istream istrm(session->m_sign_choice_request.get());
+      std::string sign_choice_request;
+      std::getline(istrm, sign_choice_request);
+      m_console.write(sign_choice_request); 
+    }
     
     // Reseting streambuf
     session->m_sign_choice_request.reset(new asio::streambuf);
 
-    // Inspecting the input format. It must be 1 or 2
-    std::string temp = m_console.read();
-    while (temp != "1" && temp != "2") {
-      m_console.write("Input incorrect. Enter 1 or 2: ");
-      temp = m_console.read();
-    } 
+    post(ui_strand, [this, session] {
+      // Inspecting the input format. It must be 1 or 2
+      std::string temp = m_console.read();
+      while (temp != "1" && temp != "2") {
+        m_console.write("Input incorrect. Enter 1 or 2: ");
+        temp = m_console.read();
+      } 
 
-    session->sign_choice = static_cast<SignChoice>(std::stoi(temp));
+      session->sign_choice = static_cast<SignChoice>(std::stoi(temp));
 
-    // Sending the choice to the server
-    asio::async_write(session->m_sock, asio::buffer(temp.append("\n")), 
-      [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
-        onSignUpResponseSent(ec, session);
-      }); 
+      // Sending the choice to the server
+      asio::async_write(session->m_sock, asio::buffer(temp.append("\n")), 
+        [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
+          onSignUpResponseSent(ec, session);
+        }); 
+    });
   } 
 
   void onSignUpResponseSent(const system::error_code& ec, std::shared_ptr<Session> session) {
@@ -197,16 +201,17 @@ private:
   } 
 
   void _enter_login(const system::error_code& /*ec*/, std::shared_ptr<Session> session) {
-    std::cin >> session->login;
-    while (!login_format_is_valid(session->login)) {
-      std::cout << "Invalid login. Try again: ";
-      std::cin >> session->login;
-    } 
+    post(ui_strand, [this, session] {
+      while (std::cin >> session->login &&
+             !login_format_is_valid(session->login)) {
+          std::cout << "Invalid login. Try again: ";
+      }
 
     asio::async_write(session->m_sock, asio::buffer(session->login + "\n"), 
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         onLoginResponseSent(ec, session);
       }); 
+    });
   }  
 
   void onLoginRequestReceived(const system::error_code& ec, std::shared_ptr<Session> session) {
@@ -219,10 +224,12 @@ private:
     }
     logger->info("in onLoginRequestReceived");
 
-    std::istream istrm(session->m_login_request_buf.get());
-    std::string login_request;
-    std::getline(istrm, login_request);
-    std::cout << login_request;
+    {
+      std::istream istrm(session->m_login_request_buf.get());
+      std::string login_request;
+      std::getline(istrm, login_request);
+      std::cout << login_request;
+    }
 
     session->m_login_request_buf.reset(new asio::streambuf);
     _enter_login(ec, session);
@@ -255,10 +262,14 @@ private:
     }
     logger->info("in onLoginValidityResponseReceived");
     
-    std::istream istrm(session->m_login_validity_buf.get());
-    std::string temp;
-    std::getline(istrm, temp);
-    auto login_validity_response = static_cast<LoginValidity>(std::stoi(temp));
+    LoginValidity login_validity_response = LoginValidity::NOT_REGISTERED;
+
+    {
+      std::istream istrm(session->m_login_validity_buf.get());
+      std::string temp;
+      std::getline(istrm, temp);
+      login_validity_response = static_cast<LoginValidity>(std::stoi(temp));
+    }
 
     session->m_login_validity_buf.reset(new asio::streambuf);
     
@@ -358,12 +369,14 @@ private:
     }
     logger->info("in onPasswordValidityResponseReceived");
     
-    std::istream istrm(session->m_password_validity_response.get());
     Status password_validity_response;
-    std::string temp;
-    std::getline(istrm, temp);
+    {
+      std::istream istrm(session->m_password_validity_response.get());
+      std::string temp;
+      std::getline(istrm, temp);
+      password_validity_response = static_cast<Status>(std::stoi(temp));
+    }
 
-    password_validity_response = static_cast<Status>(std::stoi(temp));
     session->m_password_validity_response.reset(new asio::streambuf);
     
     switch(password_validity_response) {
@@ -397,10 +410,12 @@ private:
     }
     logger->info("in onActionRequestReceived");
 
-    std::istream istrm(session->m_action_choice.get());
-    std::string action_choice_request;
-    std::getline(istrm, action_choice_request);
-    std::cout << action_choice_request;
+    {
+      std::istream istrm(session->m_action_choice.get());
+      std::string action_choice_request;
+      std::getline(istrm, action_choice_request);
+      std::cout << action_choice_request;
+    }
 
     session->m_action_choice.reset(new asio::streambuf);
 
@@ -449,9 +464,11 @@ private:
     }
     logger->info("in onActionResponseReceived");
 
-    std::istream istrm(session->m_action_buf.get());
     std::string response;
-    std::getline(istrm, response);
+    {
+      std::istream istrm(session->m_action_buf.get());
+      std::getline(istrm, response);
+    }
 
     int cnt = 1;
     std::map<int, std::string> contacts; // map to store user's number in the list and login
@@ -530,15 +547,18 @@ private:
     }
     logger->info("'{}' in onChatResponseReceived", session->login);
 
-    std::istream istrm(session->m_chat_buf.get());
-    session->current_chat = "";
-    std::string message;
-
-    // Composing chat from messages
-    do {
-      std::getline(istrm, message);
-      session->current_chat.append(message + "\n");
-    } while (!istrm.eof() && !message.empty());  
+    {
+      std::istream istrm(session->m_chat_buf.get());
+      session->current_chat = "";
+      //
+      // Composing chat from messages
+      for (std::string message; getline(istrm, message);) {
+        if (message.empty()) {
+          break; // TODO check whether correct
+        }
+        session->current_chat.append(message + "\n");
+      }
+    }
 
     // \n in the last message append to current chat is doubled
     session->current_chat.erase(session->current_chat.length() - 1);
@@ -548,31 +568,28 @@ private:
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         onSentReady(ec, session);
       }); 
-  } 
+  }
 
-  void onSentReady(const system::error_code& ec, std::shared_ptr<Session> session) {
-    if (ec.value() != 0) {
-      session->m_ec = ec;
-      onRequestComplete(session);
-      return;
-    }
-    logger->info("'{}' in onSentReady", session->login);
+  void onSentReady(const system::error_code& ec,
+                   std::shared_ptr<Session> session) {
+      if (ec.value() != 0) {
+          session->m_ec = ec;
+          onRequestComplete(session);
+          return;
+      }
+      logger->info("'{}' in onSentReady", session->login);
 
-    msg_wait_thread = std::make_unique< std::thread>([this, ec, session] {
-      asio::async_read_until(session->m_sock, *(session->m_received_message.get()), "\n", 
-        [this, session] (const system::error_code& ec, std::size_t /*bytes_transfer€kbrred*/) {
-          message_wait_loop(ec, session);
-        });
-      });
-    msg_wait_thread->detach();
+      logger->info("'{}' starting message_wait_loop", session->login);
+      asio::async_read_until(
+          session->m_sock, *(session->m_received_message.get()), "\n",
+          [this, session](const system::error_code& ec,
+                          std::size_t /*bytes_transferred*/) {
+              message_wait_loop(ec, session);
+          });
 
-    msg_thread = std::make_unique<std::thread>([this, ec, session] {
-      message_send_loop(ec, session);
-      });
-
-    msg_thread->detach();
-  } 
-
+      std::thread(
+          [this, ec, session] { message_send_loop(ec, session); }).detach();
+  }
 
   void message_send_loop(const system::error_code& ec, std::shared_ptr<Session> session) {
     /// Starts loop in the current chat enabling the client to keep sending messages to another party
@@ -603,7 +620,7 @@ private:
     lock_std_out.unlock();
 
     asio::async_write(session->m_sock, asio::buffer(new_message + "\n"), 
-      [this, session] (const system::error_code& ec, std::size_t /*bytes_transfer€kbrred*/) {
+      [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         message_send_loop(ec, session);
       }); 
   } 
@@ -612,15 +629,18 @@ private:
     /// Starts loop in the current chat enabling the client to keep reading messages from another party
 
     if (ec.value() != 0) {
+      logger->error("'{}' exiting message_wait_loop ({})", session->login, ec.message());
       session->m_ec = ec;
       onRequestComplete(session);
       return;
     }
     logger->info("'{}' in message_wait_loop", session->login);
 
-    std::istream istrm(session->m_received_message.get());
     std::string received_message;
-    std::getline(istrm, received_message);
+    {
+      std::istream istrm(session->m_received_message.get());
+      std::getline(istrm, received_message);
+    }
 
     session->m_received_message.reset(new asio::streambuf);
 
@@ -634,7 +654,7 @@ private:
     
 
     asio::async_read_until(session->m_sock, *(session->m_received_message.get()), "\n", 
-      [this, session] (const system::error_code& ec, std::size_t /*bytes_transfer€kbrred*/) {
+      [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
         message_wait_loop(ec, session);
       });
   }
@@ -675,17 +695,22 @@ private:
   } 
 
 private:
-  asio::io_context m_ios;
+  using executor_type = asio::thread_pool::executor_type;
+  asio::thread_pool m_ios { 2 }; // two io threads
+
+  using work_guard = asio::executor_work_guard<executor_type>;
+  work_guard m_work { m_ios.get_executor() };
+
+  using strand = asio::strand<executor_type>;
+  strand ui_strand { m_ios.get_executor() };
+  strand io_strand { m_ios.get_executor() };
+
   std::map<int, std::shared_ptr<Session>> m_active_sessions;
   std::mutex m_active_sessions_guard;
-  std::unique_ptr<asio::io_context::work> m_work;
-  std::unique_ptr<std::thread> m_thread;
   std::shared_ptr<spdlog::logger> logger;
 
   std::mutex std_out_guard;
   std::mutex std_out_wait_guard;
-  std::unique_ptr<std::thread> msg_thread;
-  std::unique_ptr<std::thread> msg_wait_thread;
   Console m_console;
 };
 
@@ -715,7 +740,6 @@ int main() {
     client.connect(raw_ip, port_num, handler, 1);
     //client.emulate(10, raw_ip, port_num, handler, 1);
     std::this_thread::sleep_for(500s);
-    client.close();
   } 
   catch (system::system_error& e) {
     std::cout << e.code() << " " << e.what();
