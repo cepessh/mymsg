@@ -50,7 +50,7 @@ public:
   Service(asio::ip::tcp::socket&& sock, std::shared_ptr<SAConnection> con, const int service_id):
     m_sock(std::move(sock)), // NOTE the socket executor is a strand now
     m_con(std::move(con)),
-    service_id(service_id) 
+    m_service_id(service_id) 
   { }
 
   void StartHandling() {
@@ -77,7 +77,7 @@ private:
       onFinish();
       return;
     } 
-    asio::async_read_until(m_sock, m_sign_choice, '\n',
+    asio::async_read_until(m_sock, m_inbuf, '\n',
       [this](const error_code& ec, std::size_t bytes_transferred) {
         onSignUpResponseReceived(ec, bytes_transferred);
       });
@@ -92,12 +92,14 @@ private:
       return;
     } 
     
-    std::istream istrm(&m_sign_choice);
-    std::string temp;
-    std::getline(istrm, temp);
-    sign_choice = static_cast<SignChoice>(std::stoi(temp));
+    {
+      std::istream istrm(&m_inbuf);
+      std::string temp;
+      std::getline(istrm, temp);
+      sign_choice = static_cast<SignChoice>(std::stoi(temp));
+    }
 
-    clearbuf(m_sign_choice);
+    clearbuf(m_inbuf);
 
     asio::async_write(m_sock, asio::buffer("Enter login: \n"sv),
       [this](const error_code& ec, std::size_t bytes_transferred) {
@@ -115,7 +117,7 @@ private:
     } 
     spdlog::info("Login request sent");
 
-    asio::async_read_until(m_sock, m_login_buf, '\n',
+    asio::async_read_until(m_sock, m_inbuf, '\n',
       [this](const error_code& ec, std::size_t bytes_transferred) {
         onLoginReceived(ec, bytes_transferred);
       });
@@ -133,14 +135,16 @@ private:
       return;
     } 
 
-    std::istream istrm(&m_login_buf);
-    std::getline(istrm, login);
-    clearbuf(m_login_buf);
+    {
+      std::istream istrm(&m_inbuf);
+      std::getline(istrm, m_login);
+    }
+    clearbuf(m_inbuf);
 
-    spdlog::info("Login received: {}", login);
+    spdlog::info("Login received: {}", m_login);
 
     bool login_is_valid = true;
-    MySQLQueryState login_in_database = DBquery::is_login_found(m_con, login);
+    MySQLQueryState login_in_database = DBquery::is_login_found(m_con, m_login);
     
     // Shutdown Service instance if there is error with the mysql query or mysql server
     if (login_in_database == MYSQL_ERROR) {
@@ -194,7 +198,7 @@ private:
     } 
     spdlog::info("Password request sent");
 
-    asio::async_read_until(m_sock, m_password_buf, '\n',
+    asio::async_read_until(m_sock, m_inbuf, '\n',
       [this](const error_code& ec, std::size_t bytes_transferred) {
         onPasswordReceived(ec, bytes_transferred);
       });
@@ -213,12 +217,14 @@ private:
       return;
     } 
 
-    std::istream istrm(&m_password_buf);
-    std::getline(istrm, password);
-    clearbuf(m_password_buf);
+    {
+      std::istream istrm(&m_inbuf);
+      std::getline(istrm, m_password);
+    }
+    clearbuf(m_inbuf);
 
-    spdlog::info("Password received: '{}'", password);
-    bool credentials_registered = DBquery::are_credentials_registred(m_con, login, password);  
+    spdlog::info("Password received: '{}'", m_password);
+    bool credentials_registered = DBquery::are_credentials_registred(m_con, m_login, m_password);  
 
     switch (sign_choice) {
       case SIGN_IN: {
@@ -239,7 +245,7 @@ private:
       } 
       case SIGN_UP: {
         // Updating database
-        DBquery::register_user(m_con, login, password);
+        DBquery::register_user(m_con, m_login, m_password);
 
         m_outbuf = std::to_string(AUTHORIZED) + "\n";
         asio::async_write(m_sock, asio::buffer(m_outbuf),
@@ -257,21 +263,21 @@ private:
     /// Creates chat string, sets unread messages delimeter, updates the database
     /// marking corresponding messages as read
 
-    spdlog::info("[{}] in get_chat_with", service_id);
+    spdlog::info("[{}] in get_chat_with", m_service_id);
 
     std::string res;
-    client_id = DBquery::get_user_id(m_con, login_initiator); // The client's id in the database
-    another_party_id = DBquery::get_user_id(m_con, login_another); // The id of another party
+    m_client_id = DBquery::get_user_id(m_con, login_initiator); // The client's id in the database
+    m_another_party_id = DBquery::get_user_id(m_con, login_another); // The id of another party
 
     // Recording the client's current chat status
     {
       std::unique_lock<std::mutex> session_map_lock(Tracker::current_sessions_guard); 
-      Tracker::current_sessions[client_id] = another_party_id;
-      Tracker::client_to_service_id[client_id] = service_id;
+      Tracker::current_sessions[m_client_id] = m_another_party_id;
+      Tracker::client_to_service_id[m_client_id] = m_service_id;
     }
 
-    id_to_log[client_id] = login_initiator;
-    id_to_log[another_party_id] = login_another;
+    m_id_to_log[m_client_id] = login_initiator;
+    m_id_to_log[m_another_party_id] = login_another;
 
     try {
       // Selecting all messages between the parties sorted by date
@@ -279,7 +285,7 @@ private:
           "select login_sender_id, login_recipient_id, date, content, read_by_recipient "
           "from Message where (login_sender_id = :1 and login_recipient_id = :2) or " 
           "(login_sender_id = :2 and login_recipient_id = :1) order by date");
-      select_messages << client_id << another_party_id;
+      select_messages << m_client_id << m_another_party_id;
       select_messages.Execute();
 
       bool unread_border_passed = false;
@@ -287,12 +293,12 @@ private:
       while (select_messages.FetchNext()) {
         if (!select_messages.Field("read_by_recipient").asBool()
             and !unread_border_passed
-            and select_messages.Field("login_sender_id").asLong() != client_id) {
+            and select_messages.Field("login_sender_id").asLong() != m_client_id) {
           res.append(UNREAD_BORDER + "\n");
           unread_border_passed = true;
         } 
         res.append(_form_message_str(select_messages.Field("date").asString().GetMultiByteChars(),
-              id_to_log[select_messages.Field("login_sender_id").asLong()], 
+              m_id_to_log[select_messages.Field("login_sender_id").asLong()], 
               select_messages.Field("content").asString().GetMultiByteChars()));
       }
 
@@ -301,10 +307,10 @@ private:
           "select dialog_id "
           "from Dialog where (login1_id = :1 and login2_id = :2) or " 
           "(login1_id = :2 and login2_id = :1)");
-      select_dialog_id << client_id << another_party_id;
+      select_dialog_id << m_client_id << m_another_party_id;
       select_dialog_id.Execute();
       select_dialog_id.FetchNext();
-      dialog_id = select_dialog_id.Field("dialog_id").asLong();
+      m_dialog_id = select_dialog_id.Field("dialog_id").asLong();
       select_dialog_id.Close();
 
       // Marking recently received messages as read
@@ -312,7 +318,7 @@ private:
         "update Message set read_by_recipient = TRUE "
         "where (login_sender_id = :2 and login_recipient_id = :1)");
 
-      mark_as_read << client_id << another_party_id;
+      mark_as_read << m_client_id << m_another_party_id;
       mark_as_read.Execute();
     } catch (SAException &x) {
       try {
@@ -331,7 +337,7 @@ private:
       onFinish();
       return;
     }
-    spdlog::info("'{}' has logged in", login);
+    spdlog::info("'{}' has logged in", m_login);
      
     asio::async_write(m_sock, asio::buffer("List dialogs [1] or Add contact [2]: \n"sv),
       [this](const error_code& ec, std::size_t bytes_transferred) {
@@ -349,7 +355,7 @@ private:
     }
     spdlog::info("Action request sent");
 
-    asio::async_read_until(m_sock, m_action_choice, '\n',
+    asio::async_read_until(m_sock, m_inbuf, '\n',
       [this](const error_code& ec, std::size_t bytes_transferred) {
         onActionResponseReceived(ec, bytes_transferred);
       });
@@ -364,12 +370,14 @@ private:
       return;
     }
 
-    std::istream istrm(&m_action_choice);
-    std::string temp;
-    std::getline(istrm, temp);
-    action_choice = static_cast<ActionChoice>(std::stoi(temp));
+    {
+      std::istream istrm(&m_inbuf);
+      std::string temp;
+      std::getline(istrm, temp);
+      action_choice = static_cast<ActionChoice>(std::stoi(temp));
+    }
 
-    clearbuf(m_action_choice);
+    clearbuf(m_inbuf);
 
     spdlog::info("Action response received: {}", action_choice);
 
@@ -377,7 +385,7 @@ private:
       case LIST_DIALOGS: {
         // Sends dialog list
 
-        m_outbuf = DBquery::get_dialogs_list(m_con, login) + "\n";
+        m_outbuf = DBquery::get_dialogs_list(m_con, m_login) + "\n";
         asio::async_write(m_sock, asio::buffer(m_outbuf),
           [this](const error_code& ec, std::size_t bytes_transferred) {
             onDialogsListSent(ec, bytes_transferred); 
@@ -398,9 +406,9 @@ private:
       onFinish();
       return;
     }
-    spdlog::info("[{}] in onDialogsListSent", service_id);
+    spdlog::info("[{}] in onDialogsListSent", m_service_id);
 
-    asio::async_read_until(m_sock, m_dialog_user_login, '\n',
+    asio::async_read_until(m_sock, m_inbuf, '\n',
       [this](const error_code& ec, std::size_t bytes_transferred) {
         onDialogUserLoginReceived(ec, bytes_transferred);
       });
@@ -415,14 +423,16 @@ private:
       onFinish();
       return;
     }
-    spdlog::info("[{}] in onDialogUserLoginReceived", service_id);
+    spdlog::info("[{}] in onDialogUserLoginReceived", m_service_id);
 
-    std::istream istrm(&m_dialog_user_login);
-    std::getline(istrm, login_another);
-    clearbuf(m_dialog_user_login);
+    {
+      std::istream istrm(&m_inbuf);
+      std::getline(istrm, m_login_another);
+    }
+    clearbuf(m_inbuf);
 
     // Composing chat and recording chat status
-    m_outbuf = get_chat_with(login, login_another) + "\n\n";
+    m_outbuf = get_chat_with(m_login, m_login_another) + "\n\n";
 
     asio::async_write(m_sock, asio::buffer(m_outbuf),
       [this](const error_code& ec, std::size_t bytes_transferred) {
@@ -439,7 +449,7 @@ private:
       return;
     }
     
-    asio::async_read_until(m_sock, m_ready_to_chat, '\n',
+    asio::async_read_until(m_sock, m_inbuf, '\n',
       [this](const error_code& ec, std::size_t bytes_transferred) {
         onReceivedReady(ec, bytes_transferred);
       });
@@ -449,9 +459,9 @@ private:
   void onReceivedReady(const error_code& ec, std::size_t bytes_transferred);
 
   void receive_message() {
-    spdlog::info("[{}] in receive_message", service_id);
+    spdlog::info("[{}] in receive_message", m_service_id);
 
-    asio::async_read_until(m_sock, m_message, '\n',
+    asio::async_read_until(m_sock, m_inbuf, '\n',
       [this](const error_code& ec, std::size_t bytes_transferred) {
         onMessageReceived(ec, bytes_transferred);
       });
@@ -466,7 +476,7 @@ private:
       return;
     }
 
-    spdlog::info("[{}] in onAnotherPartyMessageSent", service_id);
+    spdlog::info("[{}] in onAnotherPartyMessageSent", m_service_id);
  } 
 
   void onFinish(); 
@@ -476,29 +486,20 @@ private:
                                 ///< with the client
   std::shared_ptr<SAConnection> m_con; ///< Pointer to SAConnection object that
                                        ///< connects to the MySQL database
-  int service_id;
-  std::string m_response;
-  std::string login;
-  std::string password = "";
-  std::string login_another;
+  int m_service_id;
+  std::string m_login;
+  std::string m_password = "";
+  std::string m_login_another;
 
   SignChoice sign_choice;
   ActionChoice action_choice;
-  long dialog_id = -1, client_id = -1, another_party_id = -1;
+  long m_dialog_id = -1, m_client_id = -1, m_another_party_id = -1;
 
   std::string m_outbuf;
-  asio::streambuf m_request;
-  asio::streambuf m_login_buf;
-  asio::streambuf m_password_buf;
-  asio::streambuf m_sign_choice;
-  asio::streambuf m_action_choice;
-  asio::streambuf m_dialog_user_login;
-  asio::streambuf m_message;
-  asio::streambuf m_another_party_message;
-  asio::streambuf m_ready_to_chat;
+  asio::streambuf m_inbuf;
 
   // Id to login translation tool map
-  std::map<long, std::string> id_to_log;
+  std::map<long, std::string> m_id_to_log;
 
 };
 
@@ -555,8 +556,8 @@ public:
     
     std::string connection_string = server_name + "@" + database_name;
    
-    con.reset(new SAConnection); 
-    con->Connect(
+    m_con.reset(new SAConnection); 
+    m_con->Connect(
         _TSA(connection_string.c_str()),
         _TSA(database_user.c_str()),
         _TSA(password.c_str()),
@@ -566,28 +567,28 @@ public:
   
   void Start(unsigned short port_num) {
     /// Creates and starts Acceptor instance, spawns threads with initiated asio::io_context::run 
-    acc = std::make_unique<Acceptor>(m_ios.get_executor(), port_num, con);
-    acc->Start();
+    m_acc = std::make_unique<Acceptor>(m_ios.get_executor(), port_num, m_con);
+    m_acc->Start();
   } 
 
   void Stop() {
     /// Halts Acceptor instance and waits till event loops in spawned threads end
     m_work.reset();
-    acc->Stop();
+    m_acc->Stop();
     m_ios.stop(); // TODO instead shutdown sessions
     m_ios.join();
   } 
   static std::map<int, Service * > launched_services;
   
 private:
-  using executor = asio::thread_pool::executor_type;
+  using executor   = asio::thread_pool::executor_type;
   using work_guard = asio::executor_work_guard<executor>;
-  using strand = asio::strand<executor>;
+  using strand     = asio::strand<executor>;
   asio::thread_pool m_ios;
   work_guard m_work { m_ios.get_executor() };
-  std::unique_ptr<Acceptor> acc;
+  std::unique_ptr<Acceptor> m_acc;
   std::vector<std::unique_ptr<std::thread>> m_thread_pool;
-  std::shared_ptr<SAConnection> con;
+  std::shared_ptr<SAConnection> m_con;
 };
 
 std::map<int, Service *> Server::launched_services;
@@ -616,7 +617,7 @@ void Acceptor::onAccept(const error_code& ec, std::shared_ptr<asio::ip::tcp::soc
 } 
 
 void Service::onFinish() {
-  Server::launched_services.erase(service_id);
+  Server::launched_services.erase(m_service_id);
   delete this; // TODO use std::enable_shared_from_this
 } 
 
@@ -626,14 +627,17 @@ void Service::onReceivedReady(const error_code& ec, std::size_t /*bytes_transfer
     onFinish();
     return;
   }
-  spdlog::info("[{}] in onReceivedReady", service_id);
+  spdlog::info("[{}] in onReceivedReady", m_service_id);
 
-  std::istream istrm(&m_ready_to_chat);
-  std::string temp;
-  std::getline(istrm, temp);
+  Status status = Status::WRONG_LOG_PASS;
+  {
+    std::istream istrm(&m_inbuf);
+    std::string temp;
+    std::getline(istrm, temp);
 
-  auto status = static_cast<Status>(std::stoi(temp));
-  clearbuf(m_ready_to_chat);
+    status = static_cast<Status>(std::stoi(temp));
+  }
+  clearbuf(m_inbuf);
 
   if (status == READY_TO_CHAT) {
     receive_message();
@@ -652,20 +656,22 @@ void Service::onMessageReceived(const error_code& ec, std::size_t /*bytes_transf
     return;
   }
 
-  std::istream istrm(&m_message);
   std::string new_message;
-  std::getline(istrm, new_message);
-  clearbuf(m_message);
+  {
+    std::istream istrm(&m_inbuf);
+    std::getline(istrm, new_message);
+  }
+  clearbuf(m_inbuf);
 
-  spdlog::info("[{}] received message '{}'", service_id, new_message);
+  spdlog::info("[{}] received message '{}'", m_service_id, new_message);
 
   {
     std::unique_lock<std::mutex> tracker_lock(Tracker::current_sessions_guard);
 
-    if (Tracker::current_sessions.find(another_party_id) != Tracker::current_sessions.end()) {
-      if (Tracker::current_sessions[another_party_id] == client_id) {
-        int another_party_service_id = Tracker::client_to_service_id[another_party_id];
-        std::string formatted_msg = _form_message_str(login, new_message);
+    if (Tracker::current_sessions.find(m_another_party_id) != Tracker::current_sessions.end()) {
+      if (Tracker::current_sessions[m_another_party_id] == m_client_id) {
+        int another_party_service_id = Tracker::client_to_service_id[m_another_party_id];
+        std::string formatted_msg = _form_message_str(m_login, new_message);
 
         spdlog::info("[{}] sends to chat '{}'", another_party_service_id, new_message);
 
@@ -674,7 +680,7 @@ void Service::onMessageReceived(const error_code& ec, std::size_t /*bytes_transf
     }
   }
 
-  DBquery::insert_message(m_con, client_id, another_party_id, new_message, dialog_id);
+  DBquery::insert_message(m_con, m_client_id, m_another_party_id, new_message, m_dialog_id);
   receive_message();
 } 
 
