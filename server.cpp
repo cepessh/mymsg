@@ -269,10 +269,11 @@ private:
     another_party_id = DBquery::get_user_id(m_con, login_another); // The id of another party
 
     // Recording the client's current chat status
-    std::unique_lock<std::mutex> session_map_lock(Tracker::current_sessions_guard); 
-    Tracker::current_sessions[client_id] = another_party_id;
-    Tracker::client_to_service_id[client_id] = service_id;
-    session_map_lock.unlock();
+    {
+      std::unique_lock<std::mutex> session_map_lock(Tracker::current_sessions_guard); 
+      Tracker::current_sessions[client_id] = another_party_id;
+      Tracker::client_to_service_id[client_id] = service_id;
+    }
 
     id_to_log[client_id] = login_initiator;
     id_to_log[another_party_id] = login_another;
@@ -675,19 +676,20 @@ void Service::onMessageReceived(const error_code& ec, std::size_t /*bytes_transf
 
   spdlog::info("[{}] received message '{}'", service_id, new_message);
 
-  std::unique_lock<std::mutex> tracker_lock(Tracker::current_sessions_guard);
+  {
+    std::unique_lock<std::mutex> tracker_lock(Tracker::current_sessions_guard);
 
-  if (Tracker::current_sessions.find(another_party_id) != Tracker::current_sessions.end()) {
-    if (Tracker::current_sessions[another_party_id] == client_id) {
-      int another_party_service_id = Tracker::client_to_service_id[another_party_id];
-      std::string formatted_msg = _form_message_str(login, new_message);
-      
-      spdlog::info("[{}] sends to chat '{}'", another_party_service_id, new_message);
+    if (Tracker::current_sessions.find(another_party_id) != Tracker::current_sessions.end()) {
+      if (Tracker::current_sessions[another_party_id] == client_id) {
+        int another_party_service_id = Tracker::client_to_service_id[another_party_id];
+        std::string formatted_msg = _form_message_str(login, new_message);
 
-      Server::launched_services[another_party_service_id]->send_to_chat(std::move(formatted_msg));
+        spdlog::info("[{}] sends to chat '{}'", another_party_service_id, new_message);
+
+        Server::launched_services[another_party_service_id]->send_to_chat(std::move(formatted_msg));
+      }
     }
   }
-  tracker_lock.unlock();
 
   DBquery::insert_message(m_con, client_id, another_party_id, new_message, dialog_id);
   receive_message();
