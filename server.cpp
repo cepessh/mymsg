@@ -34,16 +34,11 @@ static void clearbuf(asio::streambuf& buf, bool warn_discard = true) {
 }
 
 /// Struct to track active sessions of clients
-struct Tracker {
+namespace Tracker {
   static std::mutex current_sessions_guard; ///< mutex to lock the map of current sessions between threads
   static std::map<long, long> current_sessions; 
   static std::map<long, int> client_to_service_id;
-}; 
-
-std::mutex Tracker::current_sessions_guard;
-std::map<long, long> Tracker::current_sessions;
-std::map<long, int> Tracker::client_to_service_id;
-
+} 
 
 /// Class that provides the actual service in the client-service model
 class Service {
