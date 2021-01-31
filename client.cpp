@@ -37,17 +37,7 @@ struct Session {
     m_ep(asio::ip::address::from_string(raw_ip), port_num),
     m_id(id),
     m_callback(std::move(callback)),
-    m_was_cancelled(false) {
-      clearbuf(m_sign_choice_request);
-      clearbuf(m_login_request_buf);
-      clearbuf(m_login_validity_buf);
-      clearbuf(m_password_request_buf);
-      clearbuf(m_password_validity_response);
-      clearbuf(m_action_choice);
-      clearbuf(m_action_buf);
-      clearbuf(m_chat_buf);
-      clearbuf(m_received_message);
-    }  
+    m_was_cancelled(false) { }  
 
   asio::ip::tcp::socket m_sock; //!< The socket for the client application to connect to the server
   asio::ip::tcp::endpoint m_ep; //!< The server's endpoint
@@ -79,6 +69,14 @@ struct Session {
 
 /// Class that implements an asynchronous TCP client to interact with Service class
 class AsyncTCPClient: public asio::noncopyable {
+  void clearbuf(asio::streambuf& buf, bool warn_discard = true) {
+    if (auto n = buf.size(); warn_discard && n > 0) {
+      std::string s(buffers_begin(buf.data()), buffers_end(buf.data()));
+      logger->warn("Discarding {} bytes of unused buffer: '{}'", n, s);
+    }
+    ::clearbuf(buf);
+  }
+
 public:
   AsyncTCPClient() {
     initLogger(); 
@@ -567,7 +565,7 @@ private:
     session->current_chat.resize(session->m_chat_buf.size());
     asio::buffer_copy(asio::buffer(session->current_chat), session->m_chat_buf.data());
 
-    clearbuf(session->m_chat_buf);
+    clearbuf(session->m_chat_buf, false);
 
     asio::async_write(session->m_sock, asio::buffer(std::to_string(READY_TO_CHAT) + "\n"), 
       [this, session] (const system::error_code& ec, std::size_t /*bytes_transferred*/) {
