@@ -21,7 +21,7 @@ CREATE TABLE `Message` (
 	`date` DATETIME NOT NULL,
 	`content` TEXT NOT NULL,
 	`dialog_id` INT NOT NULL,
-	`read_by_recipient` BOOLEAN NOT NULL,
+	`read_by_recipient` BOOLEAN NOT NULL DEFAULT FALSE,
 	PRIMARY KEY (`message_id`)
 );
 
@@ -34,7 +34,7 @@ CREATE TABLE `User/Dialog` (
 
 ALTER TABLE `Message` ADD CONSTRAINT `Message_fk0` FOREIGN KEY (`dialog_id`) REFERENCES `Dialog`(`dialog_id`);
 
-ALTER TABLE `User/Dialog` ADD CONSTRAINT `User/Dialog_fk0` FOREIGN KEY (`user_id`) REFERENCES `User`(`user_id`);
+ALTER TABLE `User/Dialog` ADUserD CONSTRAINT `User/Dialog_fk0` FOREIGN KEY (`user_id`) REFERENCES `User`(`user_id`);
 
 ALTER TABLE `User/Dialog` ADD CONSTRAINT `User/Dialog_fk1` FOREIGN KEY (`dialog_id`) REFERENCES `Dialog`(`dialog_id`);
 

@@ -96,7 +96,7 @@ namespace DBquery {
   std::string get_dialogs_list(std::shared_ptr<SAConnection> con, const std::string& login) { 
     std::vector<long> dialogs_id_list = get_dialogs_id_list(con, login);
     std::string res = "";
-    for (int i = 0; i < dialogs_id_list.size(); i ++) {
+    for (size_t i = 0; i < dialogs_id_list.size(); i ++) {
       res += get_another_party_login(con, dialogs_id_list[i], login) + " "; 
     } 
     return res;

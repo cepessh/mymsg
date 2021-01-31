@@ -49,7 +49,7 @@ std::string _get_date_str() {
 } 
 
 std::string _form_message_str(const std::string& date, const std::string& login_sender, const std::string& content) {
-  std::string res = "";
+  std::string res;
   res.append("[");
   res.append(date);
   res.append("] [");
@@ -61,7 +61,7 @@ std::string _form_message_str(const std::string& date, const std::string& login_
 } 
 
 std::string _form_message_str(const std::string& login_sender, const std::string& content) {
-  std::string res = "";
+  std::string res;
   std::string date = _get_date_str();
   return _form_message_str(date, login_sender, content);
 } 
