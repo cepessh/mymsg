@@ -1,0 +1,11 @@
+Language:                          Cpp
+BasedOnStyle:                      WebKit
+AccessModifierOffset:              -2
+ColumnLimit:                       80
+ConstructorInitializerIndentWidth: 2
+AlignTrailingComments:             true
+MaxEmptyLinesToKeep:               1
+Standard:                          Cpp11
+IndentWidth:                       2
+TabWidth:                          2
+UseTab:                            Never
