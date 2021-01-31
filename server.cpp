@@ -58,10 +58,6 @@ public:
       });
   }
   
-  asio::ip::tcp::socket& get_socket() {
-    return m_sock;
-  } 
-
   void send_to_chat(std::string new_message) {
     m_outbuf = std::move(new_message);
     asio::async_write(m_sock, asio::buffer(m_outbuf),
