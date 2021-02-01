@@ -30,10 +30,15 @@ using boost::system::error_code;
 
 #define EXIT_ON_ERR(ec)                                                        \
   if (ec.failed()) {                                                           \
-    spdlog::error("Error in {}, code: {}, message: {}", __FUNCTION__,          \
-        ec.value(), ec.message());                                             \
+    if (ec != asio::error::eof) {                                              \
+      spdlog::error("Error in {}, code: {}, message: {}", __FUNCTION__,        \
+          ec.value(), ec.message());                                           \
+    } else {                                                                   \
+      spdlog::info("in {} ({})", __FUNCTION__, ec.message());                  \
+    }                                                                          \
     return;                                                                    \
-  } /*else*/ {                                                                     \
+  } /*else*/                                                                   \
+  {                                                                            \
     spdlog::debug("in {}", __FUNCTION__);                                      \
   }
 
